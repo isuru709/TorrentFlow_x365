@@ -1,0 +1,152 @@
+========================================
+HOW TO CHANGE PORT - QUICK GUIDE
+========================================
+
+CURRENT DEFAULT: Port 80 (HTTP)
+
+METHOD 1: CHANGE IN DOCKER-COMPOSE (EASIEST)
+=============================================
+
+1. Edit docker-compose.yml:
+   nano docker-compose.yml
+
+2. Find this line:
+   - "80:8080"
+
+3. Change to your desired port:
+   
+   For port 443 (HTTPS - requires SSL):
+   - "443:8080"
+   
+   For port 3000:
+   - "3000:8080"
+   
+   For port 8080:
+   - "8080:8080"
+   
+   For any custom port (e.g., 5000):
+   - "5000:8080"
+
+4. Restart:
+   sudo docker compose down
+   sudo docker compose up -d
+
+5. Access at:
+   http://YOUR_SERVER_IP:YOUR_PORT
+   
+   Examples:
+   - Port 80:   http://YOUR_SERVER_IP (no port needed)
+   - Port 443:  https://YOUR_SERVER_IP (requires SSL)
+   - Port 3000: http://YOUR_SERVER_IP:3000
+   - Port 8080: http://YOUR_SERVER_IP:8080
+
+METHOD 2: MULTIPLE PORTS (ADVANCED)
+====================================
+
+You can expose on multiple ports:
+
+ports:
+  - "80:8080"      # HTTP
+  - "443:8080"     # HTTPS (needs SSL)
+  - "8080:8080"    # Alt port
+
+IMPORTANT NOTES
+===============
+
+PORT 80 (HTTP):
+✓ Default web port
+✓ No port number needed in URL
+✓ Requires root/sudo to bind
+✓ Best for production
+
+PORT 443 (HTTPS):
+✓ Default SSL port
+✓ Requires SSL certificate
+✓ Use https:// not http://
+✓ See SSL setup in DEPLOYMENT_STEPS.txt
+✓ Need to setup SSL termination (nginx/traefik)
+
+PORT 8080 (Custom):
+✓ No special permissions needed
+✓ Common development port
+✓ Must include :8080 in URL
+
+FIREWALL SETUP
+==============
+
+After changing port, update firewall:
+
+# For port 80 (already allowed)
+sudo ufw allow 80/tcp
+
+# For port 443
+sudo ufw allow 443/tcp
+
+# For custom port (e.g., 3000)
+sudo ufw allow 3000/tcp
+
+# Check firewall status
+sudo ufw status
+
+SSL SETUP FOR PORT 443
+=======================
+
+If using port 443, you need SSL certificate:
+
+1. Change port in docker-compose.yml to 443
+2. Use nginx reverse proxy for SSL termination
+3. Get SSL certificate (Let's Encrypt recommended)
+4. See "OPTIONAL: SSL WITH LET'S ENCRYPT" in DEPLOYMENT_STEPS.txt
+
+QUICK SSL SETUP:
+
+# Install Certbot
+sudo apt-get install -y certbot
+
+# Get certificate (replace YOUR_DOMAIN)
+sudo certbot certonly --standalone -d YOUR_DOMAIN
+
+# Certificate location:
+/etc/letsencrypt/live/YOUR_DOMAIN/fullchain.pem
+/etc/letsencrypt/live/YOUR_DOMAIN/privkey.pem
+
+# Then setup nginx reverse proxy with SSL (see DEPLOYMENT_STEPS.txt)
+
+TESTING
+=======
+
+After changing port:
+
+1. Check container status:
+   sudo docker compose ps
+
+2. Check logs:
+   sudo docker compose logs -f
+
+3. Test locally:
+   curl http://localhost:YOUR_PORT/health
+
+4. Test remotely:
+   curl http://YOUR_SERVER_IP:YOUR_PORT/health
+
+5. Open in browser:
+   http://YOUR_SERVER_IP:YOUR_PORT
+
+TROUBLESHOOTING
+===============
+
+Port already in use:
+  sudo netstat -tulpn | grep YOUR_PORT
+  sudo kill -9 <PID>
+  
+Can't bind to port 80 or 443:
+  Need root/sudo access
+  Or use port > 1024
+
+Connection refused:
+  Check firewall: sudo ufw status
+  Allow port: sudo ufw allow YOUR_PORT/tcp
+
+Still using old port:
+  sudo docker compose down
+  sudo docker compose up -d --build

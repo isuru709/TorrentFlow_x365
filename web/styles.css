@@ -1,0 +1,603 @@
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    min-height: 100vh;
+    padding: 20px;
+}
+
+.container {
+    max-width: 1200px;
+    margin: 0 auto;
+    background: white;
+    border-radius: 16px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+    overflow: hidden;
+}
+
+header {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    padding: 30px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+header h1 {
+    font-size: 28px;
+    font-weight: 700;
+}
+
+.stats {
+    display: flex;
+    gap: 20px;
+    font-size: 14px;
+}
+
+.stats span {
+    background: rgba(255, 255, 255, 0.2);
+    padding: 8px 16px;
+    border-radius: 20px;
+    backdrop-filter: blur(10px);
+}
+
+.add-torrent {
+    padding: 30px;
+    border-bottom: 1px solid #eee;
+}
+
+.add-torrent h2 {
+    margin-bottom: 20px;
+    color: #333;
+    font-size: 20px;
+}
+
+.input-group {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 15px;
+}
+
+.input-group input[type="text"] {
+    flex: 1;
+    padding: 12px 20px;
+    border: 2px solid #e0e0e0;
+    border-radius: 8px;
+    font-size: 14px;
+    transition: border-color 0.3s;
+}
+
+.input-group input[type="text"]:focus {
+    outline: none;
+    border-color: #667eea;
+}
+
+button {
+    padding: 12px 24px;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    border: none;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: transform 0.2s, box-shadow 0.2s;
+}
+
+button:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+}
+
+button:active {
+    transform: translateY(0);
+}
+
+.options {
+    display: flex;
+    gap: 20px;
+    font-size: 14px;
+    color: #666;
+}
+
+.options label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+}
+
+.torrents-list {
+    padding: 30px;
+}
+
+.torrents-list h2 {
+    margin-bottom: 20px;
+    color: #333;
+    font-size: 20px;
+}
+
+.empty-state {
+    text-align: center;
+    color: #999;
+    padding: 60px 20px;
+    font-size: 16px;
+}
+
+.empty-state.error {
+    color: #dc3545;
+    font-weight: 500;
+}
+
+.torrent-item {
+    background: #f8f9fa;
+    border-radius: 12px;
+    padding: 20px;
+    margin-bottom: 15px;
+    transition: all 0.3s ease;
+    opacity: 1;
+    transform: scale(1);
+    border-left: 4px solid transparent;
+}
+
+/* Visual indicator for actively downloading torrents */
+.torrent-item[data-state="downloading"] {
+    border-left-color: #28a745;
+    background: linear-gradient(to right, rgba(40, 167, 69, 0.05) 0%, #f8f9fa 100%);
+}
+
+.torrent-item:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
+}
+
+.torrent-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 15px;
+}
+
+.torrent-name {
+    font-size: 16px;
+    font-weight: 600;
+    color: #333;
+    flex: 1;
+    margin-right: 20px;
+}
+
+.torrent-actions {
+    display: flex;
+    gap: 8px;
+}
+
+.torrent-actions button {
+    padding: 6px 12px;
+    font-size: 12px;
+    background: #6c757d;
+}
+
+.torrent-actions button.btn-pause,
+.torrent-actions button.pause {
+    background: #ffc107;
+}
+
+.torrent-actions button.btn-pause:hover,
+.torrent-actions button.pause:hover {
+    background: #e0a800;
+}
+
+.torrent-actions button.btn-resume,
+.torrent-actions button.resume {
+    background: #28a745;
+}
+
+.torrent-actions button.btn-resume:hover,
+.torrent-actions button.resume:hover {
+    background: #218838;
+}
+
+.torrent-actions button.btn-delete,
+.torrent-actions button.delete {
+    background: #dc3545;
+}
+
+.torrent-actions button.btn-delete:hover,
+.torrent-actions button.delete:hover {
+    background: #c82333;
+}
+
+.progress-bar {
+    height: 8px;
+    background: #e0e0e0;
+    border-radius: 4px;
+    overflow: hidden;
+    margin-bottom: 15px;
+}
+
+.progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+    transition: width 0.5s ease-out;
+    will-change: width;
+}
+
+.torrent-stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 10px;
+    font-size: 13px;
+    color: #666;
+}
+
+.stat-item {
+    display: flex;
+    flex-direction: column;
+}
+
+.stat-label {
+    font-size: 11px;
+    text-transform: uppercase;
+    color: #999;
+    margin-bottom: 4px;
+}
+
+.stat-value {
+    font-weight: 600;
+    color: #333;
+    transition: color 0.3s ease;
+}
+
+/* Highlight active download speeds */
+.stat-item:has(.stat-label:contains("Download")) .stat-value,
+.stat-item:has(.stat-label:contains("Upload")) .stat-value {
+    transition: all 0.3s ease;
+}
+
+.state-downloading { color: #28a745; font-weight: 700; }
+.state-seeding { color: #17a2b8; }
+.state-paused { color: #ffc107; }
+.state-error { color: #dc3545; }
+
+@media (max-width: 768px) {
+    header {
+        flex-direction: column;
+        gap: 15px;
+        text-align: center;
+    }
+
+    .input-group {
+        flex-direction: column;
+    }
+
+    .torrent-header {
+        flex-direction: column;
+        gap: 15px;
+    }
+
+    .torrent-stats {
+        grid-template-columns: 1fr;
+    }
+}
+
+/* Toast Notifications */
+.toast-container {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    z-index: 10000;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    max-width: 400px;
+}
+
+.toast {
+    padding: 16px 20px;
+    border-radius: 8px;
+    color: white;
+    font-size: 14px;
+    font-weight: 500;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    transform: translateX(400px);
+    opacity: 0;
+    transition: all 0.3s ease;
+    white-space: pre-line;
+    word-break: break-word;
+}
+
+.toast.show {
+    transform: translateX(0);
+    opacity: 1;
+}
+
+.toast-success {
+    background: linear-gradient(135deg, #28a745 0%, #20c997 100%);
+}
+
+.toast-error {
+    background: linear-gradient(135deg, #dc3545 0%, #c82333 100%);
+}
+
+.toast-info {
+    background: linear-gradient(135deg, #17a2b8 0%, #138496 100%);
+}
+
+@media (max-width: 768px) {
+    .toast-container {
+        left: 10px;
+        right: 10px;
+        max-width: none;
+    }
+}
+/* Seeding Highlights */
+.seed-badge {
+    display: inline-block;
+    background: linear-gradient(135deg, #28a745 0%, #20c997 100%);
+    color: white;
+    padding: 4px 12px;
+    border-radius: 12px;
+    font-size: 11px;
+    font-weight: 700;
+    margin-left: 10px;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    box-shadow: 0 2px 8px rgba(40, 167, 69, 0.3);
+    animation: pulse-seed 2s infinite;
+}
+
+.done-badge {
+    display: inline-block;
+    background: linear-gradient(135deg, #34c759 0%, #2bbf6b 100%);
+    color: white;
+    padding: 4px 12px;
+    border-radius: 12px;
+    font-size: 11px;
+    font-weight: 700;
+    margin-left: 10px;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    box-shadow: 0 2px 8px rgba(52, 199, 89, 0.3);
+}
+
+@keyframes pulse-seed {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.8; transform: scale(1.05); }
+}
+
+.seeding-torrent {
+    border-left: 4px solid #28a745;
+    background: linear-gradient(to right, rgba(40, 167, 69, 0.05) 0%, transparent 100%);
+}
+
+.seeding-torrent .torrent-header {
+    background: linear-gradient(to right, rgba(40, 167, 69, 0.08) 0%, transparent 100%);
+}
+
+/* Upload Speed Highlighting */
+.stat-item:has(.stat-label:contains("Upload Speed")) .stat-value {
+    font-weight: 700;
+    color: #28a745;
+}
+/* Download Buttons */
+button.download {
+    background: linear-gradient(135deg, #28a745 0%, #20c997 100%);
+    font-weight: 700;
+}
+
+button.download:hover {
+    box-shadow: 0 5px 15px rgba(40, 167, 69, 0.4);
+}
+
+/* File List */
+.file-list {
+    margin-top: 15px;
+    padding: 15px;
+    background: #f8f9fa;
+    border-radius: 8px;
+    border-left: 4px solid #667eea;
+}
+
+.file-list-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 15px;
+    padding-bottom: 10px;
+    border-bottom: 2px solid #e0e0e0;
+}
+
+.file-list-header strong {
+    color: #333;
+    font-size: 15px;
+}
+
+button.download-all {
+    background: linear-gradient(135deg, #17a2b8 0%, #138496 100%);
+    padding: 8px 16px;
+    font-size: 13px;
+}
+
+button.download-all:hover {
+    box-shadow: 0 4px 12px rgba(23, 162, 184, 0.4);
+}
+
+.file-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px;
+    background: white;
+    border-radius: 6px;
+    margin-bottom: 8px;
+    transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.file-item:hover {
+    transform: translateX(5px);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.file-name {
+    flex: 1;
+    color: #333;
+    font-size: 13px;
+    margin-right: 15px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.file-size {
+    color: #666;
+    font-size: 12px;
+    margin-right: 15px;
+    min-width: 80px;
+    text-align: right;
+}
+
+.file-download-btn {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    padding: 6px 12px;
+    border-radius: 6px;
+    text-decoration: none;
+    font-size: 12px;
+    font-weight: 600;
+    transition: transform 0.2s, box-shadow 0.2s;
+    white-space: nowrap;
+}
+
+.file-download-btn:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 10px rgba(102, 126, 234, 0.4);
+}
+
+/* File picker modal */
+.file-picker-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.35);
+    backdrop-filter: blur(2px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 11000;
+    padding: 20px;
+}
+
+.file-picker {
+    width: min(720px, 95vw);
+    background: #ffffff;
+    border-radius: 14px;
+    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.25);
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.file-picker-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+}
+
+.file-picker-title {
+    font-size: 16px;
+    font-weight: 700;
+    color: #333;
+}
+
+.file-picker-subtitle {
+    font-size: 13px;
+    color: #666;
+}
+
+.file-picker-close {
+    background: none;
+    color: #666;
+    padding: 6px 10px;
+    border-radius: 8px;
+    border: 1px solid #e0e0e0;
+    font-size: 13px;
+    cursor: pointer;
+}
+
+.file-picker-close:hover {
+    background: #f5f5f5;
+}
+
+.file-picker-actions {
+    display: flex;
+    justify-content: flex-end;
+}
+
+.file-picker-list {
+    max-height: 380px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.file-picker-row {
+    display: grid;
+    grid-template-columns: 1fr 120px 90px;
+    align-items: center;
+    gap: 10px;
+    padding: 10px;
+    border: 1px solid #eee;
+    border-radius: 10px;
+    background: #fafafa;
+}
+
+.file-picker-name {
+    font-size: 13px;
+    color: #333;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.file-picker-size {
+    font-size: 12px;
+    color: #666;
+    text-align: right;
+}
+
+.file-picker-download {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: #fff;
+    padding: 8px 12px;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    font-weight: 600;
+}
+
+.file-picker-download:hover {
+    box-shadow: 0 4px 12px rgba(102, 126, 234, 0.35);
+}
+
+@media (max-width: 520px) {
+    .file-picker-row {
+        grid-template-columns: 1fr;
+        align-items: flex-start;
+    }
+
+    .file-picker-size {
+        text-align: left;
+    }
+
+    .file-picker-actions {
+        justify-content: center;
+    }
+}

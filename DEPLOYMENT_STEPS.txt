@@ -1,0 +1,301 @@
+==============================================
+HIGH-SPEED TORRENT DOWNLOADER - DEPLOYMENT STEPS
+==============================================
+
+OPTION 1: DOCKER DEPLOYMENT (RECOMMENDED)
+==========================================
+
+1. Install Docker & Docker Compose:
+   curl -fsSL https://get.docker.com -o get-docker.sh
+   sudo sh get-docker.sh
+   sudo apt-get install -y docker-compose-plugin
+
+2. Configure Environment:
+   cd torrent-downloader
+   cp .env.example .env
+   nano .env  # Edit your settings
+
+3. Change Port (Optional):
+   # Edit docker-compose.yml to change port 80 to your desired port:
+   nano docker-compose.yml
+   # Change "80:8080" to "YOUR_PORT:8080"
+   # Examples:
+   #   "443:8080" for HTTPS (requires SSL setup)
+   #   "3000:8080" for port 3000
+   #   "8080:8080" to keep original
+
+4. Build and Start:
+   sudo docker compose up -d --build
+
+5. Check Status:
+   sudo docker compose ps
+   sudo docker compose logs -f
+
+6. Access Application:
+   Web Interface: http://YOUR_SERVER_IP  (or http://YOUR_SERVER_IP:YOUR_PORT if not 80)
+   API Docs: http://YOUR_SERVER_IP/docs
+   Health Check: http://YOUR_SERVER_IP/health
+   
+   Note: If using port 80, no port number needed in URL
+         If using port 443, use https:// instead of http://
+
+OPTION 2: MANUAL DEPLOYMENT
+============================
+
+1. System Update & Dependencies:
+   sudo apt-get update
+   sudo apt-get upgrade -y
+   sudo apt-get install -y python3.11 python3.11-venv python3-pip nginx build-essential
+   sudo apt-get install -y libboost-all-dev libssl-dev python3-dev
+   
+2. Create Directory Structure:
+   sudo mkdir -p /srv/torrent-downloader/{app,downloads,torrents,temp,web}
+   sudo useradd -r -s /usr/sbin/nologin torrent-user || true
+   sudo chown -R torrent-user:torrent-user /srv/torrent-downloader
+   sudo chmod 755 /srv/torrent-downloader /srv/torrent-downloader/downloads
+
+3. Verify Setup:
+   ls -ld /srv/torrent-downloader /srv/torrent-downloader/app
+
+4. Create Python Virtual Environment:
+   cd /srv/torrent-downloader/app
+   sudo -u torrent-user python3.11 -m venv venv
+   sudo -u torrent-user ./venv/bin/pip install --upgrade pip wheel setuptools
+
+5. Install Python Dependencies:
+   sudo -u torrent-user ./venv/bin/pip install fastapi==0.109.0 uvicorn[standard]==0.27.0 
+   sudo -u torrent-user ./venv/bin/pip install python-multipart==0.0.9 pydantic==2.5.3
+   sudo -u torrent-user ./venv/bin/pip install aiofiles==23.2.1 python-dotenv==1.0.0
+   sudo -u torrent-user ./venv/bin/pip install libtorrent==2.0.9 bencodepy==0.9.5
+   sudo -u torrent-user ./venv/bin/pip install httpx==0.26.0 websockets==12.0
+
+6. Create Main Application:
+   sudo nano /srv/torrent-downloader/app/main.py
+   # Paste content from main.py file
+
+7. Create Configuration:
+   sudo nano /srv/torrent-downloader/app/.env
+   # Add environment variables (see .env.example)
+
+8. Create Systemd Service:
+   sudo nano /etc/systemd/system/torrent-downloader.service
+
+[Unit]
+Description=High-Speed Torrent Downloader API
+After=network.target
+
+[Service]
+Type=simple
+User=torrent-user
+Group=torrent-user
+WorkingDirectory=/srv/torrent-downloader/app
+Environment="PATH=/srv/torrent-downloader/app/venv/bin"
+ExecStart=/srv/torrent-downloader/app/venv/bin/uvicorn main:app --host 0.0.0.0 --port 8080 --workers 4
+Restart=always
+RestartSec=10
+StandardOutput=append:/var/log/torrent-downloader.log
+StandardError=append:/var/log/torrent-downloader-error.log
+
+[Install]
+WantedBy=multi-user.target
+
+9. Setup Nginx Reverse Proxy:
+   sudo nano /etc/nginx/sites-available/torrent-downloader
+
+server {
+    listen 80;
+    server_name YOUR_DOMAIN_OR_IP;
+    client_max_body_size 500M;
+
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+
+    location /downloads/ {
+        alias /srv/torrent-downloader/downloads/;
+        autoindex on;
+        autoindex_exact_size off;
+        autoindex_localtime on;
+    }
+
+    location /ws {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_read_timeout 86400;
+    }
+}
+
+10. Enable Nginx Site:
+    sudo ln -s /etc/nginx/sites-available/torrent-downloader /etc/nginx/sites-enabled/
+    sudo nginx -t
+    sudo systemctl restart nginx
+
+11. Start Service:
+    sudo systemctl daemon-reload
+    sudo systemctl enable torrent-downloader
+    sudo systemctl start torrent-downloader
+
+12. Check Service Status:
+    sudo systemctl status torrent-downloader
+    sudo journalctl -u torrent-downloader -f
+
+13. Setup Firewall:
+    sudo ufw allow 80/tcp
+    sudo ufw allow 443/tcp
+    sudo ufw allow 6881:6889/tcp  # BitTorrent
+    sudo ufw allow 6881:6889/udp  # BitTorrent DHT
+    sudo ufw enable
+
+OPTIONAL: SSL WITH LET'S ENCRYPT
+=================================
+
+1. Install Certbot:
+   sudo apt-get install -y certbot python3-certbot-nginx
+
+2. Obtain Certificate:
+   sudo certbot --nginx -d YOUR_DOMAIN
+
+3. Auto-Renewal Test:
+   sudo certbot renew --dry-run
+
+PERFORMANCE TUNING
+==================
+
+1. Increase Connection Limits:
+   sudo nano /etc/sysctl.conf
+   
+   # Add these lines:
+   net.core.rmem_max = 134217728
+   net.core.wmem_max = 134217728
+   net.ipv4.tcp_rmem = 4096 87380 67108864
+   net.ipv4.tcp_wmem = 4096 65536 67108864
+   net.core.netdev_max_backlog = 5000
+   fs.file-max = 2097152
+
+2. Apply Changes:
+   sudo sysctl -p
+
+3. Increase File Descriptors:
+   sudo nano /etc/security/limits.conf
+   
+   # Add:
+   torrent-user soft nofile 65536
+   torrent-user hard nofile 65536
+
+MONITORING & MAINTENANCE
+=========================
+
+1. View Logs:
+   sudo journalctl -u torrent-downloader -f
+   sudo tail -f /var/log/torrent-downloader.log
+
+2. Restart Service:
+   sudo systemctl restart torrent-downloader
+
+3. Clean Old Downloads:
+   # Create cleanup script
+   sudo nano /srv/torrent-downloader/cleanup.sh
+   
+#!/bin/bash
+find /srv/torrent-downloader/downloads -type f -mtime +7 -delete
+find /srv/torrent-downloader/torrents -type f -mtime +7 -delete
+
+   sudo chmod +x /srv/torrent-downloader/cleanup.sh
+   
+   # Add to crontab
+   sudo crontab -e
+   0 2 * * * /srv/torrent-downloader/cleanup.sh
+
+4. Check Disk Usage:
+   df -h /srv/torrent-downloader/downloads
+
+5. Monitor System Resources:
+   htop
+   iotop
+
+BACKUP & RESTORE
+=================
+
+1. Backup Configuration:
+   sudo tar -czf torrent-downloader-backup.tar.gz /srv/torrent-downloader/app/*.py /srv/torrent-downloader/app/.env
+
+2. Restore:
+   sudo tar -xzf torrent-downloader-backup.tar.gz -C /
+
+TROUBLESHOOTING
+===============
+
+1. Service Won't Start:
+   - Check logs: sudo journalctl -u torrent-downloader -n 50
+   - Verify permissions: ls -la /srv/torrent-downloader
+   - Test manually: cd /srv/torrent-downloader/app && ./venv/bin/python main.py
+
+2. Port Already in Use:
+   - Check: sudo netstat -tulpn | grep 8080
+   - Kill process: sudo kill -9 <PID>
+
+3. Downloads Failing:
+   - Check firewall: sudo ufw status
+   - Verify ports: sudo netstat -tulpn | grep 6881
+   - Check DHT: Test with public trackers
+
+4. High Memory Usage:
+   - Reduce max_connections in settings
+   - Lower cache_size
+   - Restart service periodically
+
+SECURITY BEST PRACTICES
+========================
+
+1. Enable Authentication:
+   - Set REQUIRE_AUTH=true in .env
+   - Generate strong API_KEY
+
+2. Rate Limiting:
+   - Configure MAX_CONCURRENT_DOWNLOADS
+   - Set download speed limits
+
+3. Regular Updates:
+   sudo apt-get update
+   sudo apt-get upgrade
+   cd /srv/torrent-downloader/app
+   sudo -u torrent-user ./venv/bin/pip install --upgrade -r requirements.txt
+
+4. Monitor Access Logs:
+   sudo tail -f /var/log/nginx/access.log
+
+API ENDPOINTS
+=============
+
+POST /api/download
+- Body: {"magnet": "magnet:...", "save_path": "optional"}
+
+POST /api/upload-torrent
+- Upload .torrent file
+
+GET /api/torrents
+- List all torrents
+
+GET /api/torrents/{torrent_id}
+- Get specific torrent info
+
+DELETE /api/torrents/{torrent_id}
+- Remove torrent
+
+POST /api/torrents/{torrent_id}/pause
+POST /api/torrents/{torrent_id}/resume
+
+WebSocket: /ws
+- Real-time torrent updates

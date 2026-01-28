@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>High-Speed Torrent Downloader</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>⚡ High-Speed Torrent Downloader</h1>
+            <div class="stats">
+                <span id="total-torrents">0 Torrents</span>
+                <span id="total-speed">↓ 0 KB/s</span>
+                <span id="storage-info">💾 Loading...</span>
+            </div>
+        </header>
+
+        <section class="add-torrent">
+            <h2>Add New Download</h2>
+            <p style="color: #666; font-size: 14px; margin-bottom: 10px;">
+                Supports: Magnet links, Torrent URLs, Info hashes, or upload .torrent files
+            </p>
+            <p style="color: #28a745; font-size: 13px; margin-bottom: 15px; font-weight: 500;">
+                💡 Tip: Magnet links work best! They bypass all download restrictions.
+            </p>
+            <div class="input-group">
+                <input type="text" id="magnet-input" placeholder="Paste magnet link, torrent URL, or info hash">
+                <button onclick="addMagnet()">Add Torrent</button>
+                <input type="file" id="torrent-file" accept=".torrent" style="display:none" onchange="uploadTorrent()">
+                <button onclick="document.getElementById('torrent-file').click()">Upload File</button>
+            </div>
+            <div class="options">
+                <label>
+                    <input type="checkbox" id="sequential-download">
+                    Sequential Download
+                </label>
+            </div>
+        </section>
+
+        <section class="torrents-list">
+            <h2>Active Downloads</h2>
+            <div id="last-update" style="font-size:12px;color:#666;margin-bottom:8px;">Last update: --</div>
+            <div id="torrents-container">
+                <p class="empty-state">No active torrents. Add one above!</p>
+            </div>
+        </section>
+    </div>
+
+    <!-- Cache-bust to ensure latest frontend JS loads -->
+    <script src="app.js?v=4"></script>
+</body>
+</html>

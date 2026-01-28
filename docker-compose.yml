@@ -1,0 +1,39 @@
+services:
+  torrent-downloader:
+    build: .
+    container_name: torrent-downloader
+    restart: unless-stopped
+    ports:
+      - "8080:8080"  # Change 8080 to any port you want (e.g., 80, 443, 3000)
+      - "2095:8080"  # Secondary binding for Cloudflare/HTTPS
+      - "2087:8080"
+      - "6881-6889:6881-6889"
+      - "6881-6889:6881-6889/udp"
+    volumes:
+      - ./downloads:/downloads
+      - ./torrents:/torrents
+      - ./temp:/temp
+      - ./main.py:/app/main.py
+      - ./web:/app/web
+    environment:
+      - DOWNLOAD_DIR=/downloads
+      - TORRENT_DIR=/torrents
+      - TEMP_DIR=/temp
+      - MAX_DOWNLOAD_RATE=0
+      - MAX_UPLOAD_RATE=1048576
+      - MAX_CONNECTIONS=200
+      - LISTEN_PORT_START=6881
+      - LISTEN_PORT_END=6889
+      - DHT_ENABLED=true
+      - REQUIRE_AUTH=false
+    networks:
+      - torrent-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  torrent-network:
+    driver: bridge
