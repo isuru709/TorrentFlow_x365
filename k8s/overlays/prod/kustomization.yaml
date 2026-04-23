@@ -9,7 +9,7 @@ resources:
 images:
   - name: torrent-downloader
     newName: registry.digitalocean.com/torrentflow-registry/torrent-downloader
-    newTag: 23fdcf3
+    newTag: 50806f2
 
 labels:
   - pairs:
