@@ -50,9 +50,7 @@ kind: Kustomization
 namespace: torrent-downloader
 
 resources:
-  - ../../base/deployment.yaml
-  - ../../base/service.yaml
-  - ../../base/pvc.yaml
+  - ../../base
 
 images:
   - name: torrent-downloader

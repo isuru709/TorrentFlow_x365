@@ -10,7 +10,7 @@ spec:
   source:
     repoURL: https://github.com/isuru709/TorrentFlow_x365.git
     targetRevision: main
-    path: k8s/overlays/prod
+    path: k8s
   destination:
     server: https://kubernetes.default.svc
     namespace: torrent-downloader

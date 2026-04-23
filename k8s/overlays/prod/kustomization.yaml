@@ -4,15 +4,16 @@ kind: Kustomization
 namespace: torrent-downloader
 
 resources:
-  - ../../base/deployment.yaml
-  - ../../base/service.yaml
-  - ../../base/pvc.yaml
+  - ../../base
 
 images:
   - name: torrent-downloader
     newName: registry.digitalocean.com/torrentflow-registry/torrent-downloader
     newTag: latest
 
-commonLabels:
-  app.kubernetes.io/managed-by: argocd
-  app.kubernetes.io/environment: prod
+labels:
+  - pairs:
+      app.kubernetes.io/managed-by: argocd
+      app.kubernetes.io/environment: prod
+    includeSelectors: false
+    includeTemplates: true
