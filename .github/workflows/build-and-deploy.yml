@@ -43,20 +43,20 @@ jobs:
           mkdir -p "$(dirname "${KUSTOMIZATION_FILE}")"
 
           if [ ! -s "${KUSTOMIZATION_FILE}" ]; then
-            cat > "${KUSTOMIZATION_FILE}" <<'YAML'
-apiVersion: kustomize.config.k8s.io/v1beta1
-kind: Kustomization
-
-namespace: torrent-downloader
-
-resources:
-  - ../../base
-
-images:
-  - name: torrent-downloader
-    newName: registry.digitalocean.com/torrentflow-registry/torrent-downloader
-    newTag: latest
-YAML
+            printf '%s\n' \
+              'apiVersion: kustomize.config.k8s.io/v1beta1' \
+              'kind: Kustomization' \
+              '' \
+              'namespace: torrent-downloader' \
+              '' \
+              'resources:' \
+              '  - ../../base' \
+              '' \
+              'images:' \
+              '  - name: torrent-downloader' \
+              '    newName: registry.digitalocean.com/torrentflow-registry/torrent-downloader' \
+              '    newTag: latest' \
+              > "${KUSTOMIZATION_FILE}"
           fi
 
       - name: Set up Docker Buildx
