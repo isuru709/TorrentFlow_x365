@@ -23,8 +23,6 @@ spec:
         app.kubernetes.io/name: torrent-downloader
         app.kubernetes.io/part-of: torrentflow
     spec:
-      imagePullSecrets:
-        - name: do-registry
       containers:
         - name: torrent-downloader
           # Kustomize in overlays/prod replaces this image and tag.

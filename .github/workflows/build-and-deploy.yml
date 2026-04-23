@@ -20,6 +20,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       KUSTOMIZATION_FILE: k8s/overlays/prod/kustomization.yaml
+      DEFAULT_DOCR_REGISTRY: registry.digitalocean.com/torrentflow-registry
+      DEFAULT_DOCR_REPOSITORY: torrent-downloader
 
     steps:
       - name: Checkout repository
@@ -29,14 +31,23 @@ jobs:
 
       - name: Validate required secrets
         run: |
-          test -n "${{ secrets.DOCR_REGISTRY }}" || (echo "DOCR_REGISTRY is missing" && exit 1)
-          test -n "${{ secrets.DOCR_REPOSITORY }}" || (echo "DOCR_REPOSITORY is missing" && exit 1)
           test -n "${{ secrets.DOCR_TOKEN }}" || (echo "DOCR_TOKEN is missing" && exit 1)
 
       - name: Set image variables
         run: |
+          REGISTRY="${{ secrets.DOCR_REGISTRY }}"
+          REPOSITORY="${{ secrets.DOCR_REPOSITORY }}"
+
+          if [ -z "${REGISTRY}" ]; then
+            REGISTRY="${DEFAULT_DOCR_REGISTRY}"
+          fi
+
+          if [ -z "${REPOSITORY}" ]; then
+            REPOSITORY="${DEFAULT_DOCR_REPOSITORY}"
+          fi
+
           echo "IMAGE_TAG=${GITHUB_SHA::7}" >> "$GITHUB_ENV"
-          echo "IMAGE_NAME=${{ secrets.DOCR_REGISTRY }}/${{ secrets.DOCR_REPOSITORY }}" >> "$GITHUB_ENV"
+          echo "IMAGE_NAME=${REGISTRY}/${REPOSITORY}" >> "$GITHUB_ENV"
 
       - name: Ensure kustomization file exists and is not empty
         run: |
