@@ -538,21 +538,6 @@ button.download-all:hover {
 .file-picker-actions {
     display: flex;
     justify-content: flex-end;
-    gap: 8px;
-    flex-wrap: wrap;
-}
-
-.copy-link-btn,
-.file-picker-copy {
-    background: #eef2ff;
-    color: #2f4c92;
-    border: 1px solid #c7d5ff;
-}
-
-.copy-link-btn:hover,
-.file-picker-copy:hover {
-    background: #e2e9ff;
-    box-shadow: none;
 }
 
 .file-picker-list {
@@ -565,7 +550,7 @@ button.download-all:hover {
 
 .file-picker-row {
     display: grid;
-    grid-template-columns: 1fr 120px minmax(210px, auto);
+    grid-template-columns: 1fr 120px 90px;
     align-items: center;
     gap: 10px;
     padding: 10px;
@@ -588,21 +573,14 @@ button.download-all:hover {
     text-align: right;
 }
 
-.file-picker-buttons {
-    display: flex;
-    justify-content: flex-end;
-    gap: 8px;
-}
-
 .file-picker-download {
     background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
     color: #fff;
-    padding: 8px 10px;
+    padding: 8px 12px;
     border: none;
     border-radius: 8px;
     cursor: pointer;
     font-weight: 600;
-    font-size: 12px;
 }
 
 .file-picker-download:hover {
@@ -621,9 +599,5 @@ button.download-all:hover {
 
     .file-picker-actions {
         justify-content: center;
-    }
-
-    .file-picker-buttons {
-        justify-content: flex-start;
     }
 }

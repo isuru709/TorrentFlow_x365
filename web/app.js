@@ -349,7 +349,7 @@ function createTorrentHTML(torrent) {
     const resumeDisabled = (!isPaused || isCompleted) ? 'disabled' : '';
     const actionButtons = `
         <button type="button" class="btn-pause" data-id="${id}" title="Pause torrent" ${pauseDisabled}>⏸ Pause</button>
-        <button type="button" class="btn-download" data-id="${id}" title="Download files or copy links">⬇ Files</button>
+        <button type="button" class="btn-download" data-id="${id}" title="Download files">⬇ Download</button>
         <button type="button" class="btn-resume" data-id="${id}" title="Resume torrent" ${resumeDisabled}>▶ Resume</button>
     `;
     
@@ -508,6 +508,11 @@ async function downloadTorrent(id) {
             return;
         }
 
+        if (availableFiles.length === 1) {
+            triggerDownload(id, availableFiles[0].relative_path);
+            return;
+        }
+
         showFilePicker(id, availableFiles);
     } catch (error) {
         console.error('Download error:', error);
@@ -515,47 +520,12 @@ async function downloadTorrent(id) {
     }
 }
 
-function buildZipDownloadUrl(torrentId) {
-    return `${API_BASE}/api/torrents/${torrentId}/download?archive=true`;
-}
-
-function buildFileDownloadUrl(torrentId, relativePath) {
-    return `${API_BASE}/api/torrents/${torrentId}/download?file=${encodeURIComponent(relativePath)}`;
-}
-
-async function copyToClipboard(text, successMessage) {
-    try {
-        if (navigator.clipboard && window.isSecureContext) {
-            await navigator.clipboard.writeText(text);
-        } else {
-            const textArea = document.createElement('textarea');
-            textArea.value = text;
-            textArea.style.position = 'fixed';
-            textArea.style.opacity = '0';
-            document.body.appendChild(textArea);
-            textArea.focus();
-            textArea.select();
-            const copied = document.execCommand('copy');
-            textArea.remove();
-            if (!copied) {
-                throw new Error('Clipboard copy command was blocked');
-            }
-        }
-
-        showNotification(successMessage, 'success');
-    } catch (error) {
-        console.error('Clipboard error:', error);
-        showNotification('❌ Could not copy automatically. Manual copy dialog opened.', 'error');
-        window.prompt('Copy link manually:', text);
-    }
-}
-
 function triggerDownload(torrentId, relativePath = null, asZip = false) {
     const link = document.createElement('a');
     if (asZip || !relativePath) {
-        link.href = buildZipDownloadUrl(torrentId);
+        link.href = `${API_BASE}/api/torrents/${torrentId}/download`;
     } else {
-        link.href = buildFileDownloadUrl(torrentId, relativePath);
+        link.href = `${API_BASE}/api/torrents/${torrentId}/download?file=${encodeURIComponent(relativePath)}`;
     }
     link.target = '_blank';
     link.rel = 'noopener';
@@ -577,82 +547,38 @@ function showFilePicker(torrentId, files) {
     modal.innerHTML = `
         <div class="file-picker-header">
             <div>
-                <div class="file-picker-title">Download or Copy Links</div>
-                <div class="file-picker-subtitle">${files.length} file${files.length === 1 ? '' : 's'} available</div>
+                <div class="file-picker-title">Choose what to download</div>
+                <div class="file-picker-subtitle">${files.length} files available</div>
             </div>
             <button type="button" class="file-picker-close" aria-label="Close">✖</button>
         </div>
         <div class="file-picker-actions">
-            <button type="button" class="download-all" data-action="zip">⬇ Download ZIP</button>
-            <button type="button" class="copy-link-btn" data-action="copy-zip">📋 Copy ZIP link</button>
-            <button type="button" class="copy-link-btn" data-action="copy-files">📋 Copy all file links</button>
+            <button type="button" class="download-all" data-action="zip">⬇ Download all (.zip)</button>
         </div>
         <div class="file-picker-list"></div>
     `;
 
     const listEl = modal.querySelector('.file-picker-list');
     files.forEach((file) => {
-        const relativePath = file.relative_path || '';
-        const displayName = relativePath || 'file';
         const row = document.createElement('div');
         row.className = 'file-picker-row';
         row.innerHTML = `
-            <div class="file-picker-name" title="${escapeHtml(displayName)}">${escapeHtml(displayName)}</div>
+            <div class="file-picker-name" title="${escapeHtml(file.relative_path || 'file')}">${escapeHtml(file.relative_path || 'file')}</div>
             <div class="file-picker-size">${formatBytes(file.size || 0)}</div>
-            <div class="file-picker-buttons">
-                <button type="button" class="file-picker-download" aria-label="Download file">⬇ Download</button>
-                <button type="button" class="file-picker-copy" aria-label="Copy file link">📋 Copy link</button>
-            </div>
+            <button type="button" class="file-picker-download" aria-label="Download file">⬇</button>
         `;
 
         row.querySelector('.file-picker-download').addEventListener('click', () => {
-            if (!relativePath) {
-                showNotification('⚠️ File path is unavailable for this item.', 'info');
-                return;
-            }
-            triggerDownload(torrentId, relativePath);
+            triggerDownload(torrentId, file.relative_path);
             backdrop.remove();
-        });
-
-        row.querySelector('.file-picker-copy').addEventListener('click', async () => {
-            if (!relativePath) {
-                showNotification('⚠️ File path is unavailable for this item.', 'info');
-                return;
-            }
-            await copyToClipboard(
-                buildFileDownloadUrl(torrentId, relativePath),
-                '📋 File link copied'
-            );
         });
 
         listEl.appendChild(row);
     });
 
-    modal.querySelector('[data-action="zip"]').addEventListener('click', () => {
+    modal.querySelector('.download-all').addEventListener('click', () => {
         triggerDownload(torrentId, null, true);
         backdrop.remove();
-    });
-
-    modal.querySelector('[data-action="copy-zip"]').addEventListener('click', async () => {
-        await copyToClipboard(
-            buildZipDownloadUrl(torrentId),
-            '📋 ZIP link copied'
-        );
-    });
-
-    modal.querySelector('[data-action="copy-files"]').addEventListener('click', async () => {
-        const links = files
-            .map((file) => file.relative_path || '')
-            .filter(Boolean)
-            .map((relativePath) => buildFileDownloadUrl(torrentId, relativePath))
-            .join('\n');
-
-        if (!links) {
-            showNotification('⚠️ No file links available yet.', 'info');
-            return;
-        }
-
-        await copyToClipboard(links, '📋 All file links copied');
     });
 
     const closeModal = () => backdrop.remove();

@@ -1250,13 +1250,8 @@ async def resume_download(torrent_id: str):
 
 
 @app.get("/api/torrents/{torrent_id}/download")
-async def download_torrent_files(
-    torrent_id: str,
-    background_tasks: BackgroundTasks,
-    file: Optional[str] = None,
-    archive: bool = False,
-):
-    """Download torrent contents. File query returns one file; archive=true forces a zip."""
+async def download_torrent_files(torrent_id: str, background_tasks: BackgroundTasks, file: Optional[str] = None):
+    """Download torrent contents. Single file returns directly; multi-file torrents are zipped."""
     files, torrent_name = torrent_manager.get_torrent_files(torrent_id)
 
     existing_files = []
@@ -1284,7 +1279,7 @@ async def download_torrent_files(
 
     safe_base = "".join(c for c in (torrent_name or "download") if c not in '\\/:*?"<>|').strip() or "download"
 
-    if not archive and len(existing_files) == 1:
+    if len(existing_files) == 1:
         file_entry = existing_files[0]
         return FileResponse(
             file_entry["absolute_path"],

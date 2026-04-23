@@ -1,0 +1,7 @@
+TODO - Torrent Downloader
+
+[ ] Add a "Copy Link" action for "Download all (.zip)" in the file picker.
+[ ] Add a "Copy Link" action for each individual file in the file picker.
+[ ] Copy absolute download URLs (not relative paths) to clipboard.
+[ ] Show a success/error toast after copy attempt.
+[ ] Verify copied links work for both zip download and separate file downloads.
