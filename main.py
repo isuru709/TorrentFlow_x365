@@ -39,9 +39,10 @@ logger = logging.getLogger('torrent-api')
 DOWNLOAD_DIR = Path(os.getenv("DOWNLOAD_DIR", "/srv/torrent-downloader/downloads"))
 TORRENT_DIR = Path(os.getenv("TORRENT_DIR", "/srv/torrent-downloader/torrents"))
 TEMP_DIR = Path(os.getenv("TEMP_DIR", "/srv/torrent-downloader/temp"))
+STATE_DIR = Path(os.getenv("STATE_DIR", "/srv/torrent-downloader/state"))
 
 # Create directories
-for directory in [DOWNLOAD_DIR, TORRENT_DIR, TEMP_DIR]:
+for directory in [DOWNLOAD_DIR, TORRENT_DIR, TEMP_DIR, STATE_DIR]:
     directory.mkdir(parents=True, exist_ok=True)
 
 # Settings
@@ -185,16 +186,221 @@ class TorrentManager:
         
         logger.info(f"Session initialized. Listening on port {LISTEN_PORT_START}")
         
+        # Restore previously active torrents from saved state
+        await self.load_all_state()
+        
         # Start monitoring task
         asyncio.create_task(self.monitor_torrents())
     
     async def shutdown(self):
-        """Cleanup session"""
+        """Cleanup session — save all state before closing"""
         logger.info("Shutting down torrent session...")
         if self.session:
             self.session.pause()
             
             # Save resume data for all torrents
+            await self.save_all_state()
+            logger.info("All torrent state saved to disk.")
+    
+    # -----------------------
+    # State Persistence
+    # -----------------------
+    async def save_all_state(self):
+        """Save resume data + metadata for every torrent so they survive restarts."""
+        logger.info("Saving all torrent state...")
+        
+        # 1. Save libtorrent resume data for every active torrent
+        handles_to_save: Dict[str, lt.torrent_handle] = {}
+        for torrent_id, handle in list(self.torrents.items()):
+            try:
+                if handle.is_valid():
+                    handle.save_resume_data(
+                        lt.save_resume_flags_t.flush_disk_cache
+                        | lt.save_resume_flags_t.save_info_dict
+                    )
+                    handles_to_save[torrent_id] = handle
+            except Exception as e:
+                logger.warning(f"Could not request resume data for {torrent_id}: {e}")
+        
+        # 2. Collect resume data alerts (wait up to 10 seconds)
+        if handles_to_save and self.session:
+            remaining = len(handles_to_save)
+            deadline = time.time() + 10
+            while remaining > 0 and time.time() < deadline:
+                alerts = self.session.pop_alerts()
+                for alert in alerts:
+                    if isinstance(alert, lt.save_resume_data_alert):
+                        # Find which torrent_id this belongs to
+                        for tid, h in handles_to_save.items():
+                            try:
+                                if h.is_valid() and h.info_hash() == alert.handle.info_hash():
+                                    resume_path = STATE_DIR / f"{tid}.fastresume"
+                                    resume_data = lt.bencode(lt.write_resume_data(alert.resume_data))
+                                    resume_path.write_bytes(resume_data)
+                                    remaining -= 1
+                                    logger.debug(f"Saved resume data for {tid}")
+                                    break
+                            except Exception:
+                                pass
+                    elif isinstance(alert, lt.save_resume_data_failed_alert):
+                        remaining -= 1
+                if remaining > 0:
+                    await asyncio.sleep(0.1)
+        
+        # 3. Persist metadata, completed torrents, and completed files as JSON
+        state = {
+            "torrent_metadata": {},
+            "completed_torrents": {},
+            "completed_files": {},
+            "active_torrent_ids": list(self.torrents.keys()),
+        }
+        
+        # Serialize torrent_metadata (all string-serializable values)
+        for tid, meta in self.torrent_metadata.items():
+            state["torrent_metadata"][tid] = {
+                k: str(v) if isinstance(v, Path) else v
+                for k, v in meta.items()
+            }
+        
+        # Serialize completed torrents
+        for tid, info in self.completed_torrents.items():
+            state["completed_torrents"][tid] = info.model_dump()
+        
+        # Serialize completed files
+        for tid, entry in self.completed_files.items():
+            serialized_files = []
+            for f in entry.get("files", []):
+                serialized_files.append({
+                    "relative_path": f.get("relative_path", ""),
+                    "absolute_path": str(f.get("absolute_path", "")),
+                    "size": f.get("size", 0),
+                })
+            state["completed_files"][tid] = {
+                "files": serialized_files,
+                "save_path": str(entry.get("save_path", "")),
+                "name": entry.get("name", "download"),
+            }
+        
+        state_path = STATE_DIR / "state.json"
+        try:
+            state_path.write_text(json.dumps(state, indent=2, default=str))
+            logger.info(f"State saved: {len(self.torrents)} active, {len(self.completed_torrents)} completed")
+        except Exception as e:
+            logger.error(f"Failed to save state.json: {e}")
+    
+    async def load_all_state(self):
+        """Restore torrents from saved state after a restart."""
+        state_path = STATE_DIR / "state.json"
+        if not state_path.exists():
+            logger.info("No saved state found — starting fresh.")
+            return
+        
+        try:
+            state = json.loads(state_path.read_text())
+        except Exception as e:
+            logger.error(f"Failed to read state.json: {e}")
+            return
+        
+        saved_metadata = state.get("torrent_metadata", {})
+        saved_completed = state.get("completed_torrents", {})
+        saved_completed_files = state.get("completed_files", {})
+        active_ids = state.get("active_torrent_ids", [])
+        
+        restored_active = 0
+        restored_completed = 0
+        
+        # 1. Restore completed torrent snapshots (no libtorrent handle needed)
+        for tid, info_dict in saved_completed.items():
+            try:
+                self.completed_torrents[tid] = TorrentInfo(**info_dict)
+                restored_completed += 1
+            except Exception as e:
+                logger.warning(f"Failed to restore completed torrent {tid}: {e}")
+        
+        for tid, entry in saved_completed_files.items():
+            # Convert absolute_path strings back to Path objects
+            files = []
+            for f in entry.get("files", []):
+                files.append({
+                    "relative_path": f.get("relative_path", ""),
+                    "absolute_path": Path(f.get("absolute_path", "")),
+                    "size": f.get("size", 0),
+                })
+            self.completed_files[tid] = {
+                "files": files,
+                "save_path": entry.get("save_path", ""),
+                "name": entry.get("name", "download"),
+            }
+        
+        # Restore metadata for completed torrents
+        for tid, meta in saved_metadata.items():
+            if tid not in active_ids:
+                self.torrent_metadata[tid] = meta
+        
+        # 2. Restore active (in-progress) torrents via resume data
+        for tid in active_ids:
+            meta = saved_metadata.get(tid, {})
+            resume_path = STATE_DIR / f"{tid}.fastresume"
+            torrent_file_path = meta.get("torrent_file")
+            save_path = meta.get("save_path", str(DOWNLOAD_DIR))
+            
+            try:
+                params = {
+                    'save_path': save_path,
+                    'storage_mode': lt.storage_mode_t.storage_mode_sparse,
+                    'flags': lt.torrent_flags.auto_managed,
+                }
+                
+                # Load resume data if available
+                if resume_path.exists():
+                    try:
+                        resume_data = lt.bdecode(resume_path.read_bytes())
+                        params['resume_data'] = lt.bencode(resume_data) if not isinstance(resume_data, bytes) else resume_path.read_bytes()
+                    except Exception as e:
+                        logger.warning(f"Bad resume data for {tid}: {e}")
+                
+                # Prefer .torrent file, then magnet/info_hash
+                added = False
+                if torrent_file_path and Path(torrent_file_path).exists():
+                    try:
+                        params['ti'] = lt.torrent_info(torrent_file_path)
+                        handle = self.session.add_torrent(params)
+                        added = True
+                    except Exception as e:
+                        logger.warning(f"Failed to load .torrent for {tid}: {e}")
+                
+                if not added:
+                    # Try to reconstruct from info_hash or original URL
+                    info_hash = meta.get('info_hash')
+                    url = meta.get('url', '')
+                    magnet = None
+                    
+                    if info_hash:
+                        magnet = f"magnet:?xt=urn:btih:{info_hash}"
+                    elif url and url.lower().startswith('magnet:'):
+                        magnet = url
+                    elif meta.get('hash'):
+                        magnet = f"magnet:?xt=urn:btih:{meta['hash']}"
+                    
+                    if magnet:
+                        # For magnet + resume data, use add_magnet_uri
+                        handle = lt.add_magnet_uri(self.session, magnet, params)
+                        added = True
+                    else:
+                        logger.warning(f"Cannot restore torrent {tid}: no .torrent file or info hash")
+                        continue
+                
+                if added:
+                    self.torrents[tid] = handle
+                    self.torrent_metadata[tid] = meta
+                    self.boost_torrent_speed(handle)
+                    restored_active += 1
+                    logger.info(f"Restored active torrent {tid}: {meta.get('url', 'unknown')[:60]}")
+            except Exception as e:
+                logger.error(f"Failed to restore torrent {tid}: {e}")
+        
+        logger.info(f"State restored: {restored_active} active, {restored_completed} completed")
+    
     async def download_torrent_file(self, url: str) -> bytes:
         """Download .torrent file from URL with advanced anti-bot bypass"""
         
@@ -298,10 +504,19 @@ class TorrentManager:
             if url.lower().startswith('magnet:'):
                 handle = lt.add_magnet_uri(self.session, url, params)
                 self.torrents[torrent_id] = handle
+                
+                # Extract info hash for resume persistence
+                info_hash = ''
+                try:
+                    info_hash = str(handle.info_hash())
+                except Exception:
+                    pass
+                
                 self.torrent_metadata[torrent_id] = {
                     'added_time': time.time(),
                     'source': 'magnet',
                     'url': url,
+                    'info_hash': info_hash,
                     'save_path': params['save_path'],
                     'stopped_on_complete': False
                 }
@@ -329,11 +544,19 @@ class TorrentManager:
                 params['ti'] = lt.torrent_info(str(torrent_file))
                 handle = self.session.add_torrent(params)
                 
+                # Extract info hash for resume persistence
+                info_hash = ''
+                try:
+                    info_hash = str(handle.info_hash())
+                except Exception:
+                    pass
+                
                 self.torrents[torrent_id] = handle
                 self.torrent_metadata[torrent_id] = {
                     'added_time': time.time(),
                     'source': 'url',
                     'url': url,
+                    'info_hash': info_hash,
                     'torrent_file': str(torrent_file),
                     'save_path': params['save_path'],
                     'stopped_on_complete': False
@@ -358,6 +581,7 @@ class TorrentManager:
                     'added_time': time.time(),
                     'source': 'hash',
                     'hash': url,
+                    'info_hash': url,
                     'save_path': params['save_path'],
                     'stopped_on_complete': False
                 }
@@ -576,9 +800,18 @@ class TorrentManager:
         
         try:
             handle = self.session.add_torrent(params)
+            
+            # Extract info hash for resume persistence
+            info_hash = ''
+            try:
+                info_hash = str(handle.info_hash())
+            except Exception:
+                pass
+            
             self.torrents[torrent_id] = handle
             self.torrent_metadata[torrent_id] = {
                 'added_time': time.time(),
+                'info_hash': info_hash,
                 'torrent_file': str(torrent_file),
                 'save_path': params['save_path'],
                 'stopped_on_complete': False
@@ -818,6 +1051,9 @@ class TorrentManager:
     
     async def monitor_torrents(self):
         """Background task to monitor torrents and send updates (optimized for speed)"""
+        last_state_save = time.time()
+        STATE_SAVE_INTERVAL = 60  # Save state every 60 seconds
+        
         while True:
             try:
                 await asyncio.sleep(0.5)  # Update every 500ms for more responsive UI
@@ -831,6 +1067,15 @@ class TorrentManager:
                             self.stop_if_completed(torrent_id, handle, status)
                     except Exception as e:
                         logger.debug(f"Error checking torrent status: {e}")
+                
+                # Periodically save state to protect against crashes
+                now = time.time()
+                if now - last_state_save >= STATE_SAVE_INTERVAL:
+                    try:
+                        await self.save_all_state()
+                        last_state_save = now
+                    except Exception as e:
+                        logger.error(f"Periodic state save failed: {e}")
                 
                 # Always send updates even if no clients (they might connect soon)
                 # Get all torrent info
@@ -1005,8 +1250,13 @@ async def resume_download(torrent_id: str):
 
 
 @app.get("/api/torrents/{torrent_id}/download")
-async def download_torrent_files(torrent_id: str, background_tasks: BackgroundTasks, file: Optional[str] = None):
-    """Download torrent contents. Single file returns directly; multi-file torrents are zipped."""
+async def download_torrent_files(
+    torrent_id: str,
+    background_tasks: BackgroundTasks,
+    file: Optional[str] = None,
+    archive: bool = False,
+):
+    """Download torrent contents. File query returns one file; archive=true forces a zip."""
     files, torrent_name = torrent_manager.get_torrent_files(torrent_id)
 
     existing_files = []
@@ -1034,7 +1284,7 @@ async def download_torrent_files(torrent_id: str, background_tasks: BackgroundTa
 
     safe_base = "".join(c for c in (torrent_name or "download") if c not in '\\/:*?"<>|').strip() or "download"
 
-    if len(existing_files) == 1:
+    if not archive and len(existing_files) == 1:
         file_entry = existing_files[0]
         return FileResponse(
             file_entry["absolute_path"],

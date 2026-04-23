@@ -24,7 +24,7 @@ COPY main.py .
 COPY web/ ./web/
 
 # Create necessary directories
-RUN mkdir -p /downloads /torrents /temp
+RUN mkdir -p /downloads /torrents /temp /state
 
 # Expose ports
 EXPOSE 8080 6881-6889

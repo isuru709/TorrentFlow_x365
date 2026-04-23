@@ -1,4 +1,4 @@
-# ⚡ High-Speed Torrent Downloader.
+# ⚡ High-Speed Torrent Downloader
 
 Modern, high-performance torrent downloader built with Python, FastAPI, and libtorrent. Features real-time WebSocket updates, RESTful API, and beautiful web interface.
 
