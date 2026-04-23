@@ -46,6 +46,11 @@ jobs:
             REPOSITORY="${DEFAULT_DOCR_REPOSITORY}"
           fi
 
+          REGISTRY="${REGISTRY//$'\r'/}"
+          REGISTRY="${REGISTRY//$'\n'/}"
+          REPOSITORY="${REPOSITORY//$'\r'/}"
+          REPOSITORY="${REPOSITORY//$'\n'/}"
+
           echo "IMAGE_TAG=${GITHUB_SHA::7}" >> "$GITHUB_ENV"
           echo "IMAGE_NAME=${REGISTRY}/${REPOSITORY}" >> "$GITHUB_ENV"
 
@@ -93,8 +98,19 @@ jobs:
 
       - name: Update kustomization image reference
         run: |
-          sed -i -E "s#(^[[:space:]]*newName:[[:space:]]*).*$#\1${IMAGE_NAME}#g" "${KUSTOMIZATION_FILE}"
-          sed -i -E "s#(^[[:space:]]*newTag:[[:space:]]*).*$#\1${IMAGE_TAG}#g" "${KUSTOMIZATION_FILE}"
+          TMP_FILE="$(mktemp)"
+
+          while IFS= read -r line || [ -n "$line" ]; do
+            if [[ "$line" =~ ^([[:space:]]*newName:[[:space:]]*).*$ ]]; then
+              printf '%s%s\n' "${BASH_REMATCH[1]}" "${IMAGE_NAME}" >> "$TMP_FILE"
+            elif [[ "$line" =~ ^([[:space:]]*newTag:[[:space:]]*).*$ ]]; then
+              printf '%s%s\n' "${BASH_REMATCH[1]}" "${IMAGE_TAG}" >> "$TMP_FILE"
+            else
+              printf '%s\n' "$line" >> "$TMP_FILE"
+            fi
+          done < "${KUSTOMIZATION_FILE}"
+
+          mv "$TMP_FILE" "${KUSTOMIZATION_FILE}"
 
       - name: Commit manifest update
         run: |
