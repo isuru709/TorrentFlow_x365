@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: torrent-data-pvc
+  labels:
+    app: torrent-downloader
+    app.kubernetes.io/name: torrent-downloader
+    app.kubernetes.io/part-of: torrentflow
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: do-block-storage
+  resources:
+    requests:
+      storage: 30Gi

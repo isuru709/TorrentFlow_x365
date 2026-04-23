@@ -1,0 +1,89 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: torrent-downloader
+  labels:
+    app: torrent-downloader
+    app.kubernetes.io/name: torrent-downloader
+    app.kubernetes.io/part-of: torrentflow
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: torrent-downloader
+  template:
+    metadata:
+      labels:
+        app: torrent-downloader
+        app.kubernetes.io/name: torrent-downloader
+        app.kubernetes.io/part-of: torrentflow
+    spec:
+      imagePullSecrets:
+        - name: do-registry
+      containers:
+        - name: torrent-downloader
+          # Kustomize in overlays/prod replaces this image and tag.
+          image: torrent-downloader:latest
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: DOWNLOAD_DIR
+              value: /data/downloads
+            - name: TORRENT_DIR
+              value: /data/torrents
+            - name: TEMP_DIR
+              value: /data/temp
+            - name: STATE_DIR
+              value: /data/state
+            - name: MAX_DOWNLOAD_RATE
+              value: "0"
+            - name: MAX_UPLOAD_RATE
+              value: "1048576"
+            - name: MAX_CONNECTIONS
+              value: "300"
+            - name: LISTEN_PORT_START
+              value: "6881"
+            - name: LISTEN_PORT_END
+              value: "6889"
+            - name: DHT_ENABLED
+              value: "true"
+            - name: REQUIRE_AUTH
+              value: "false"
+          volumeMounts:
+            - name: torrent-data
+              mountPath: /data
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "2"
+              memory: "2Gi"
+      volumes:
+        - name: torrent-data
+          persistentVolumeClaim:
+            claimName: torrent-data-pvc

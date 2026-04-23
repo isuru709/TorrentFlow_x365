@@ -1,0 +1,101 @@
+name: Build, Push, and Update K8s Tag
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - "k8s/overlays/prod/kustomization.yaml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: torrentflow-main-deploy
+  cancel-in-progress: false
+
+jobs:
+  build-push-update:
+    runs-on: ubuntu-latest
+    env:
+      KUSTOMIZATION_FILE: k8s/overlays/prod/kustomization.yaml
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate required secrets
+        run: |
+          test -n "${{ secrets.DOCR_REGISTRY }}" || (echo "DOCR_REGISTRY is missing" && exit 1)
+          test -n "${{ secrets.DOCR_REPOSITORY }}" || (echo "DOCR_REPOSITORY is missing" && exit 1)
+          test -n "${{ secrets.DOCR_TOKEN }}" || (echo "DOCR_TOKEN is missing" && exit 1)
+
+      - name: Set image variables
+        run: |
+          echo "IMAGE_TAG=${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+          echo "IMAGE_NAME=${{ secrets.DOCR_REGISTRY }}/${{ secrets.DOCR_REPOSITORY }}" >> "$GITHUB_ENV"
+
+      - name: Ensure kustomization file exists and is not empty
+        run: |
+          mkdir -p "$(dirname "${KUSTOMIZATION_FILE}")"
+
+          if [ ! -s "${KUSTOMIZATION_FILE}" ]; then
+            cat > "${KUSTOMIZATION_FILE}" <<'YAML'
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: torrent-downloader
+
+resources:
+  - ../../base/deployment.yaml
+  - ../../base/service.yaml
+  - ../../base/pvc.yaml
+
+images:
+  - name: torrent-downloader
+    newName: registry.digitalocean.com/torrentflow-registry/torrent-downloader
+    newTag: latest
+YAML
+          fi
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to DigitalOcean Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: registry.digitalocean.com
+          username: doctl
+          password: ${{ secrets.DOCR_TOKEN }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+            ${{ env.IMAGE_NAME }}:latest
+
+      - name: Update kustomization image reference
+        run: |
+          sed -i -E "s#(^[[:space:]]*newName:[[:space:]]*).*$#\1${IMAGE_NAME}#g" "${KUSTOMIZATION_FILE}"
+          sed -i -E "s#(^[[:space:]]*newTag:[[:space:]]*).*$#\1${IMAGE_TAG}#g" "${KUSTOMIZATION_FILE}"
+
+      - name: Commit manifest update
+        run: |
+          if git diff --quiet -- "${KUSTOMIZATION_FILE}"; then
+            echo "No manifest changes to commit."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "${KUSTOMIZATION_FILE}"
+          git commit -m "ci: set image ${IMAGE_TAG}"
+          git push
