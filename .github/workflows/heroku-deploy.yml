@@ -17,6 +17,20 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Verify Secrets
+        env:
+          HEROKU_API_KEY: ${{ secrets.HEROKU_API_KEY }}
+          HEROKU_APP_NAME: ${{ secrets.HEROKU_APP_NAME }}
+        run: |
+          if [ -z "$HEROKU_API_KEY" ]; then
+            echo "::error::HEROKU_API_KEY secret is missing! Please add it to your repository secrets."
+            exit 1
+          fi
+          if [ -z "$HEROKU_APP_NAME" ]; then
+            echo "::error::HEROKU_APP_NAME secret is missing! Please add it to your repository secrets."
+            exit 1
+          fi
+
       - name: Login to Heroku Container Registry
         env:
           HEROKU_API_KEY: ${{ secrets.HEROKU_API_KEY }}
