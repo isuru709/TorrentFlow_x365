@@ -36,6 +36,13 @@ function connectWebSocket() {
         setWsStatus('connected');
         loadTorrents();
         stopPolling();
+
+        // Keep connection alive for Heroku (prevents 55s timeout)
+        window.wsPingInterval = setInterval(() => {
+            if (ws.readyState === WebSocket.OPEN) {
+                ws.send('ping');
+            }
+        }, 30000);
     };
 
     ws.onmessage = (event) => {
@@ -55,6 +62,7 @@ function connectWebSocket() {
 
     ws.onclose = () => {
         console.log('WebSocket disconnected, reconnecting…');
+        clearInterval(window.wsPingInterval);
         setWsStatus('disconnected');
         reconnectTimeout = setTimeout(connectWebSocket, 3000);
         startPolling();

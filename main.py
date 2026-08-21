@@ -1086,19 +1086,19 @@ class TorrentManager:
             torrents_data = [info.model_dump() for info in self.list_torrents()]
             disconnected = []
             
-            for client in self.websocket_clients:
+            for client in list(self.websocket_clients):
                 try:
                     await client.send_json({
                         'type': 'update',
                         'torrents': torrents_data
                     })
-                except (WebSocketDisconnect, RuntimeError, ConnectionError):
+                except Exception:
                     disconnected.append(client)
             
             # Remove disconnected clients
             for client in disconnected:
                 self.websocket_clients.discard(client)
-        except RuntimeError as e:
+        except Exception as e:
             logger.error(f"Error broadcasting update: {e}")
     
     async def monitor_torrents(self):
@@ -1133,19 +1133,19 @@ class TorrentManager:
                 if self.websocket_clients:
                     torrents_data = [info.model_dump() for info in self.list_torrents()]
                     disconnected = []
-                    for client in self.websocket_clients:
+                    for client in list(self.websocket_clients):
                         try:
                             await client.send_json({
                                 'type': 'update',
                                 'torrents': torrents_data
                             })
-                        except (WebSocketDisconnect, RuntimeError, ConnectionError):
+                        except Exception:
                             disconnected.append(client)
                     
                     for client in disconnected:
                         self.websocket_clients.discard(client)
                     
-            except RuntimeError as e:
+            except Exception as e:
                 logger.error(f"Error in monitor task: {e}")
 
 # -----------------------
