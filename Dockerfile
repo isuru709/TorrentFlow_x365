@@ -37,5 +37,5 @@ EXPOSE ${PORT} 6881-6889
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
     CMD curl -f http://localhost:${PORT}/health || exit 1
 
-# Run application — shell wrapper so $PORT is expanded at runtime
-ENTRYPOINT ["/bin/sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT} --workers 1"]
+# Run application (shell form is required for Heroku $PORT expansion)
+CMD uvicorn main:app --host 0.0.0.0 --port $PORT --workers 1
