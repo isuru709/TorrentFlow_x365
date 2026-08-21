@@ -3,52 +3,94 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>High-Speed Torrent Downloader</title>
+    <meta name="description" content="TorrentFlow x365 — High-speed torrent downloader with real-time monitoring, magnet link support, and seedbox-level performance.">
+    <meta name="theme-color" content="#0a0e1a">
+    <title>TorrentFlow x365 — High-Speed Torrent Downloader</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚡</text></svg>">
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
+    <div class="app-bg"></div>
+
     <div class="container">
         <header>
-            <h1>⚡ High-Speed Torrent Downloader</h1>
-            <div class="stats">
-                <span id="total-torrents">0 Torrents</span>
-                <span id="total-speed">↓ 0 KB/s</span>
-                <span id="storage-info">💾 Loading...</span>
+            <div class="header-left">
+                <div class="logo">
+                    <span class="logo-icon">⚡</span>
+                    <div>
+                        <h1>TorrentFlow <span class="logo-tag">x365</span></h1>
+                        <p class="logo-subtitle">High-Speed Torrent Engine</p>
+                    </div>
+                </div>
+            </div>
+            <div class="header-right">
+                <div class="stats-bar">
+                    <div class="stat-pill" id="ws-status" title="WebSocket connection status">
+                        <span class="ws-dot"></span>
+                        <span class="ws-label">Connecting</span>
+                    </div>
+                    <div class="stat-pill" id="total-torrents">
+                        <span class="stat-pill-icon">📦</span> <span>0 Torrents</span>
+                    </div>
+                    <div class="stat-pill" id="total-speed">
+                        <span class="stat-pill-icon">⬇</span> <span>0 B/s</span>
+                    </div>
+                    <div class="stat-pill" id="storage-info">
+                        <span class="stat-pill-icon">💾</span> <span>Loading…</span>
+                    </div>
+                </div>
             </div>
         </header>
 
-        <section class="add-torrent">
-            <h2>Add New Download</h2>
-            <p style="color: #666; font-size: 14px; margin-bottom: 10px;">
-                Supports: Magnet links, Torrent URLs, Info hashes, or upload .torrent files
-            </p>
-            <p style="color: #28a745; font-size: 13px; margin-bottom: 15px; font-weight: 500;">
-                💡 Tip: Magnet links work best! They bypass all download restrictions.
-            </p>
-            <div class="input-group">
-                <input type="text" id="magnet-input" placeholder="Paste magnet link, torrent URL, or info hash">
-                <button onclick="addMagnet()">Add Torrent</button>
-                <input type="file" id="torrent-file" accept=".torrent" style="display:none" onchange="uploadTorrent()">
-                <button onclick="document.getElementById('torrent-file').click()">Upload File</button>
+        <section class="add-torrent" id="add-section">
+            <div class="section-header">
+                <h2>Add New Download</h2>
+                <span class="section-hint">Supports magnet links, torrent URLs, info hashes &amp; .torrent files</span>
             </div>
-            <div class="options">
-                <label>
+            <div class="input-group">
+                <div class="input-wrapper">
+                    <span class="input-icon">🔗</span>
+                    <input type="text" id="magnet-input"
+                           placeholder="Paste magnet link, torrent URL, or info hash…"
+                           autocomplete="off" spellcheck="false">
+                    <button class="input-paste-btn" id="paste-btn" title="Paste from clipboard">📋</button>
+                </div>
+                <button class="btn btn-primary" id="add-btn" onclick="addMagnet()">
+                    <span class="btn-icon">⚡</span> Add
+                </button>
+                <input type="file" id="torrent-file" accept=".torrent" style="display:none" onchange="uploadTorrent()">
+                <button class="btn btn-secondary" onclick="document.getElementById('torrent-file').click()">
+                    <span class="btn-icon">📁</span> Upload
+                </button>
+            </div>
+            <div class="options-row">
+                <label class="checkbox-label">
                     <input type="checkbox" id="sequential-download">
+                    <span class="checkbox-custom"></span>
                     Sequential Download
                 </label>
+                <span class="shortcut-hint">💡 Tip: Press <kbd>Ctrl</kbd>+<kbd>V</kbd> anywhere to auto-paste</span>
             </div>
         </section>
 
         <section class="torrents-list">
-            <h2>Active Downloads</h2>
-            <div id="last-update" style="font-size:12px;color:#666;margin-bottom:8px;">Last update: --</div>
+            <div class="section-header">
+                <h2>Downloads</h2>
+                <span id="last-update" class="section-hint">Last update: —</span>
+            </div>
             <div id="torrents-container">
-                <p class="empty-state">No active torrents. Add one above!</p>
+                <div class="empty-state">
+                    <div class="empty-icon">📥</div>
+                    <p>No active torrents</p>
+                    <span>Add a magnet link or upload a .torrent file to get started</span>
+                </div>
             </div>
         </section>
     </div>
 
-    <!-- Cache-bust to ensure latest frontend JS loads -->
-    <script src="app.js?v=4"></script>
+    <script src="app.js?v=5"></script>
 </body>
 </html>

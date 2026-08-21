@@ -1,0 +1,56 @@
+name: Deploy to Heroku (Docker)
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: heroku-deploy
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Login to Heroku Container Registry
+        env:
+          HEROKU_API_KEY: ${{ secrets.HEROKU_API_KEY }}
+        run: |
+          echo "$HEROKU_API_KEY" | docker login --username=_ --password-stdin registry.heroku.com
+
+      - name: Build and push Docker image
+        env:
+          HEROKU_APP_NAME: ${{ secrets.HEROKU_APP_NAME }}
+        run: |
+          docker build -t registry.heroku.com/${HEROKU_APP_NAME}/web .
+          docker push registry.heroku.com/${HEROKU_APP_NAME}/web
+
+      - name: Release image
+        env:
+          HEROKU_API_KEY: ${{ secrets.HEROKU_API_KEY }}
+          HEROKU_APP_NAME: ${{ secrets.HEROKU_APP_NAME }}
+        run: |
+          curl -X PATCH \
+            https://api.heroku.com/apps/${HEROKU_APP_NAME}/formation \
+            -H "Content-Type: application/json" \
+            -H "Accept: application/vnd.heroku+json; version=3.docker-releases" \
+            -H "Authorization: Bearer ${HEROKU_API_KEY}" \
+            -d '{"updates": [{"type": "web", "docker_image": "'$(docker inspect registry.heroku.com/${HEROKU_APP_NAME}/web --format={{.Id}})'" }]}'
+
+      - name: Verify deployment
+        env:
+          HEROKU_APP_NAME: ${{ secrets.HEROKU_APP_NAME }}
+        run: |
+          echo "Waiting for deployment to stabilize..."
+          sleep 15
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://${HEROKU_APP_NAME}.herokuapp.com/health" || true)
+          if [ "$HTTP_STATUS" = "200" ]; then
+            echo "✅ Deployment verified — health check returned 200"
+          else
+            echo "⚠️ Health check returned $HTTP_STATUS — app may still be starting"
+          fi

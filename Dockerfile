@@ -1,15 +1,16 @@
-FROM python:3.11-slim
+FROM python:3.13-slim
 
 LABEL maintainer="torrent-downloader"
-LABEL description="High-Speed Torrent Downloader with libtorrent"
+LABEL description="TorrentFlow x365 — High-Speed Torrent Downloader"
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    libboost-all-dev \
-    libssl-dev \
-    python3-dev \
+# Install system dependencies including libtorrent
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3-libtorrent \
+    curl \
     && rm -rf /var/lib/apt/lists/*
+
+# Make system-installed libtorrent visible to the container's Python
+ENV PYTHONPATH="/usr/lib/python3/dist-packages"
 
 # Create app directory
 WORKDIR /app
@@ -26,12 +27,15 @@ COPY web/ ./web/
 # Create necessary directories
 RUN mkdir -p /downloads /torrents /temp /state
 
+# Use PORT env var (Heroku assigns dynamically), default to 8080
+ENV PORT=8080
+
 # Expose ports
-EXPOSE 8080 6881-6889
+EXPOSE ${PORT} 6881-6889
 
-# Health check
+# Health check using curl
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-    CMD python -c "import requests; requests.get('http://localhost:8080/health')"
+    CMD curl -f http://localhost:${PORT}/health || exit 1
 
-# Run application with a single worker to keep torrent state consistent
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080", "--workers", "1"]
+# Run application — shell wrapper so $PORT is expanded at runtime
+ENTRYPOINT ["/bin/sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT} --workers 1"]

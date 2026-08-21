@@ -1,0 +1,24 @@
+.git
+.github
+.gitignore
+.env
+*.md
+*.png
+*.jpg
+k8s/
+downloads/
+torrents/
+temp/
+state/
+__pycache__/
+*.pyc
+.dockerignore
+docker-compose.yml
+heroku.yml
+.python-version
+Screenshot*
+DEPLOYMENT_STEPS.txt
+PORT_CHANGE_GUIDE.txt
+todo.txt
+test_rebuild.sh
+nginx config.txt
