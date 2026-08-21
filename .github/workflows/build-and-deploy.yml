@@ -1,11 +1,6 @@
 name: Build, Push, and Update K8s Tag
 
 on:
-  push:
-    branches:
-      - main
-    paths-ignore:
-      - "k8s/overlays/prod/kustomization.yaml"
   workflow_dispatch:
 
 permissions:

@@ -54,7 +54,7 @@ jobs:
             -H "Content-Type: application/json" \
             -H "Accept: application/vnd.heroku+json; version=3.docker-releases" \
             -H "Authorization: Bearer ${HEROKU_API_KEY}" \
-            -d '{"updates": [{"type": "web", "docker_image": "'$(docker inspect registry.heroku.com/${HEROKU_APP_NAME}/web --format={{.Id}})'" }]}'
+            -d '{"updates": [{"type": "web", "quantity": 1, "docker_image": "'$(docker inspect registry.heroku.com/${HEROKU_APP_NAME}/web --format={{.Id}})'" }]}'
 
       - name: Verify deployment
         env:
