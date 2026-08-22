@@ -358,9 +358,11 @@ class TorrentManager:
             serialized_files = []
             for f in entry.get("files", []):
                 serialized_files.append({
+                    "index": f.get("index"),
                     "relative_path": f.get("relative_path", ""),
                     "absolute_path": str(f.get("absolute_path", "")),
                     "size": f.get("size", 0),
+                    "media_type": f.get("media_type")
                 })
             state["completed_files"][tid] = {
                 "files": serialized_files,
@@ -412,9 +414,11 @@ class TorrentManager:
             files = []
             for f in entry.get("files", []):
                 files.append({
+                    "index": f.get("index"),
                     "relative_path": f.get("relative_path", ""),
                     "absolute_path": Path(f.get("absolute_path", "")),
                     "size": f.get("size", 0),
+                    "media_type": f.get("media_type")
                 })
             self.completed_files[tid] = {
                 "files": files,
@@ -1736,8 +1740,10 @@ async def list_torrent_files(torrent_id: str):
         abs_path = Path(file_entry["absolute_path"])
         if abs_path.exists():
             available_files.append({
+                "index": file_entry.get("index"),
                 "relative_path": file_entry["relative_path"],
-                "size": file_entry.get("size", 0)
+                "size": file_entry.get("size", 0),
+                "media_type": file_entry.get("media_type")
             })
 
     if not available_files:

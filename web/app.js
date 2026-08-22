@@ -472,11 +472,6 @@ async function downloadTorrent(id) {
             return;
         }
 
-        if (availableFiles.length === 1) {
-            triggerDownload(id, availableFiles[0].relative_path);
-            return;
-        }
-
         showFilePicker(id, availableFiles);
     } catch (error) {
         showNotification(`❌ ${error.message}`, 'error');
@@ -554,7 +549,10 @@ function showFilePicker(torrentId, files) {
         const copyBtn = row.querySelector('.file-picker-copy');
         if (copyBtn) {
             copyBtn.addEventListener('click', () => {
-                const directUrl = `${API_BASE}/api/torrents/${torrentId}/download/${file.index}`;
+                const directUrl = file.index !== undefined && file.index !== null
+                    ? `${API_BASE}/api/torrents/${torrentId}/download/${file.index}`
+                    : `${API_BASE}/api/torrents/${torrentId}/download?file=${encodeURIComponent(file.relative_path)}`;
+                
                 navigator.clipboard.writeText(directUrl).then(() => {
                     copyBtn.innerHTML = '✅';
                     setTimeout(() => copyBtn.innerHTML = '📋', 2000);
