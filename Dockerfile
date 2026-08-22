@@ -22,6 +22,7 @@ RUN pip install --no-cache-dir --upgrade pip && \
 
 # Copy application code
 COPY main.py .
+COPY cleanup.py .
 COPY web/ ./web/
 
 # Create necessary directories

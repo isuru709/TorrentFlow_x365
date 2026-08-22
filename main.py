@@ -163,6 +163,11 @@ class TorrentManager:
             'auto_manage_interval': 5,
             'max_failcount': 1,
             
+            # LOW-SEEDER OPTIMIZATIONS (Keep peers alive longer)
+            'peer_timeout': 120,          # Don't drop peers too quickly (default 20)
+            'inactivity_timeout': 180,    # Tolerate 3 mins of inactivity
+            'connection_speed': 500,      # Give peers more time to handshake
+            
             # AGGRESSIVE PERFORMANCE SETTINGS
             'aio_threads': 16,  # More async I/O threads
             'checking_mem_usage': 4096,  # 4GB for hash checking
@@ -185,12 +190,12 @@ class TorrentManager:
             'unchoke_slots_limit': 100,  # Allow many simultaneous uploads
             'half_open_limit': 200,  # More simultaneous connection attempts
             
-            # PEER MANAGEMENT - OPTIMIZED FOR SEEDING
+            # PEER MANAGEMENT - OPTIMIZED FOR LOW-SEEDER + SEEDING
             'choking_algorithm': 0,  # Fixed slots choking
             'seed_choking_algorithm': 1,  # Fastest upload (prioritize fast peers)
-            'peer_turnover': 5,  # Very aggressive turnover for maximum speed
+            'peer_turnover': 2,  # Relax turnover so we don't accidentally drop our only seeds
             'peer_turnover_cutoff': 90,  # Drop slowest 10% of peers (int percentage)
-            'peer_turnover_interval': 180,  # Check every 3 minutes
+            'peer_turnover_interval': 300,  # Check every 5 minutes (more patience)
             'share_mode_target': 3,  # Super seeding ratio target
             'upload_rate_limit': int(MAX_UPLOAD_RATE if MAX_UPLOAD_RATE > 0 else 100 * 1024 * 1024),  # 100MB/s default
             
@@ -1266,6 +1271,10 @@ class TorrentManager:
         last_state_save = time.time()
         STATE_SAVE_INTERVAL = 60  # Save state every 60 seconds
         
+        # Track previous seed/peer counts for logging
+        last_peer_counts = {} 
+        last_reannounce = {}  
+        
         while True:
             try:
                 await asyncio.sleep(1.0)  # Update every 1s
@@ -1282,6 +1291,24 @@ class TorrentManager:
                         if not handle.is_valid():
                             continue
                         status = handle.status()
+                        
+                        # Peer/Seed tracking (Task 4)
+                        prev_counts = last_peer_counts.get(torrent_id, (0, 0))
+                        if prev_counts != (status.num_seeds, status.num_peers):
+                            logger.info(f"[SWARM] {torrent_id[:8]} | Seeds: {prev_counts[0]}->{status.num_seeds} | Peers: {prev_counts[1]}->{status.num_peers} | State: {status.state}")
+                            last_peer_counts[torrent_id] = (status.num_seeds, status.num_peers)
+                        
+                        # Periodic re-announce for low-seeder torrents (every 5 mins)
+                        now = time.time()
+                        last_ann = last_reannounce.get(torrent_id, now)
+                        if now - last_ann > 300 and not status.is_finished:
+                            try:
+                                logger.info(f"[SWARM] {torrent_id[:8]} | Forcing tracker re-announce to find new peers")
+                                handle.force_reannounce()
+                                last_reannounce[torrent_id] = now
+                            except RuntimeError:
+                                pass
+                        
                         # Stop seeding once complete (keep files)
                         if status.progress >= 1.0:
                             self.stop_if_completed(torrent_id, handle, status)
@@ -1414,6 +1441,23 @@ async def health_check():
         "dht_enabled": DHT_ENABLED,
         "storage": storage_info
     }
+
+@app.post("/admin/clean")
+async def admin_clean(api_key: str = ""):
+    """Manually trigger the deployment cleanup process"""
+    if REQUIRE_AUTH and api_key != API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid API Key")
+    elif not REQUIRE_AUTH and API_KEY and api_key != API_KEY:
+        # If API_KEY is set but REQUIRE_AUTH is false, still require it for admin
+        raise HTTPException(status_code=401, detail="Invalid API Key")
+
+    try:
+        import cleanup
+        result = cleanup.run_cleanup()
+        return {"success": True, "message": "Cleanup complete", "details": result}
+    except Exception as e:
+        logger.error(f"Manual cleanup failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/download", response_model=dict)
 async def add_torrent_download(request: TorrentAddRequest):
