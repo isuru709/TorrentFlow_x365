@@ -793,10 +793,22 @@ class TorrentManager:
                 for idx in range(files_storage.num_files()):
                     rel_path = files_storage.file_path(idx)
                     abs_path = Path(metadata.get('save_path', DOWNLOAD_DIR)) / rel_path
+                    
+                    ext = Path(rel_path).suffix.lower()
+                    media_type = None
+                    if ext in ('.mp4', '.mkv', '.avi', '.webm', '.mov'):
+                        media_type = 'video'
+                    elif ext in ('.mp3', '.flac', '.wav', '.m4a', '.ogg'):
+                        media_type = 'audio'
+                    elif ext in ('.srt', '.vtt', '.ass'):
+                        media_type = 'subtitle'
+                        
                     files_snapshot.append({
+                        "index": idx,
                         "relative_path": rel_path,
                         "absolute_path": abs_path,
-                        "size": files_storage.file_size(idx)
+                        "size": files_storage.file_size(idx),
+                        "media_type": media_type
                     })
             except RuntimeError:
                 torrent_info = None
