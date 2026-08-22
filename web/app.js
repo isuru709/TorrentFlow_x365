@@ -340,6 +340,7 @@ function createTorrentHTML(torrent) {
                     ${escapeHtml(name)} ${badge}
                 </div>
                 <div class="torrent-actions">
+                    <button type="button" class="btn-copy-magnet" data-id="${id}" data-name="${escapeHtml(name)}" title="Copy Magnet Link">📋 Magnet</button>
                     <button type="button" class="btn-pause" data-id="${id}" title="Pause" ${pauseDisabled}>⏸ Pause</button>
                     <button type="button" class="btn-resume" data-id="${id}" title="Resume" ${resumeDisabled}>▶ Resume</button>
                     <button type="button" class="btn-download" data-id="${id}" title="Download files">⬇ Files</button>
@@ -414,6 +415,15 @@ function setupTorrentEventListeners() {
         else if (target.classList.contains('btn-resume'))   resumeTorrent(torrentId);
         else if (target.classList.contains('btn-download')) downloadTorrent(torrentId);
         else if (target.classList.contains('btn-delete'))   deleteTorrent(torrentId);
+        else if (target.classList.contains('btn-copy-magnet')) {
+            const name = target.dataset.name || torrentId;
+            const magnetUri = `magnet:?xt=urn:btih:${torrentId}&dn=${encodeURIComponent(name)}`;
+            navigator.clipboard.writeText(magnetUri).then(() => {
+                const orig = target.innerHTML;
+                target.innerHTML = '✅ Copied!';
+                setTimeout(() => target.innerHTML = orig, 2000);
+            }).catch(() => showNotification('Failed to copy', 'error'));
+        }
     });
 
     window.__torrentListenersAttached = true;
@@ -515,16 +525,50 @@ function showFilePicker(torrentId, files) {
     files.forEach((file) => {
         const row = document.createElement('div');
         row.className = 'file-picker-row';
+        
+        let buttonsHTML = `
+            <button type="button" class="file-picker-copy" aria-label="Copy direct link" title="Copy Direct Link" style="background: none; border: 1px solid #4a5568; color: #a0aec0; border-radius: 4px; cursor: pointer; padding: 4px 8px;">📋</button>
+            <button type="button" class="file-picker-download" aria-label="Download file" title="Download">⬇ Get</button>
+        `;
+        
+        if (file.media_type === 'video' || file.media_type === 'audio') {
+            buttonsHTML = `<button type="button" class="file-picker-play" aria-label="Play media" title="Play Media" style="background: #e53e3e; border: none; color: white; border-radius: 4px; cursor: pointer; padding: 4px 8px; font-weight: 600;">▶ Play</button>` + buttonsHTML;
+        }
+
         row.innerHTML = `
             <div class="file-picker-name" title="${escapeHtml(file.relative_path || 'file')}">${escapeHtml(file.relative_path || 'file')}</div>
             <div class="file-picker-size">${formatBytes(file.size || 0)}</div>
-            <button type="button" class="file-picker-download" aria-label="Download file">⬇ Get</button>
+            <div class="file-picker-btn-group" style="display:flex; gap:6px; align-items:center;">
+                ${buttonsHTML}
+            </div>
         `;
 
-        row.querySelector('.file-picker-download').addEventListener('click', () => {
-            triggerDownload(torrentId, file.relative_path);
-            backdrop.remove();
-        });
+        const dlBtn = row.querySelector('.file-picker-download');
+        if (dlBtn) {
+            dlBtn.addEventListener('click', () => {
+                triggerDownload(torrentId, file.relative_path);
+                backdrop.remove();
+            });
+        }
+        
+        const copyBtn = row.querySelector('.file-picker-copy');
+        if (copyBtn) {
+            copyBtn.addEventListener('click', () => {
+                const directUrl = `${API_BASE}/api/torrents/${torrentId}/download/${file.index}`;
+                navigator.clipboard.writeText(directUrl).then(() => {
+                    copyBtn.innerHTML = '✅';
+                    setTimeout(() => copyBtn.innerHTML = '📋', 2000);
+                });
+            });
+        }
+        
+        const playBtn = row.querySelector('.file-picker-play');
+        if (playBtn) {
+            playBtn.addEventListener('click', () => {
+                playMedia(torrentId, file, files);
+                backdrop.remove();
+            });
+        }
 
         listEl.appendChild(row);
     });
@@ -605,13 +649,74 @@ async function updateStorageInfo() {
             const el = document.getElementById('storage-info');
             if (el) {
                 el.innerHTML = `<span class="stat-pill-icon">💾</span> <span>${free_gb} GB free / ${total_gb} GB (${used_percent}%)</span>`;
-                if (used_percent > 90)      el.style.borderColor = 'var(--danger)';
+                if (used_percent > 90)       el.style.borderColor = 'var(--danger)';
                 else if (used_percent > 75)  el.style.borderColor = 'var(--warning)';
                 else                         el.style.borderColor = 'var(--border-subtle)';
             }
         }
     } catch (error) {
         console.error('Failed to fetch storage info:', error);
+    }
+}
+
+// ---------------------------------------------------------
+// Media Player
+// ---------------------------------------------------------
+function playMedia(torrentId, mediaFile, allFiles) {
+    const modal = document.getElementById('media-modal');
+    const title = document.getElementById('media-title');
+    const videoPlayer = document.getElementById('media-player');
+    const audioPlayer = document.getElementById('audio-player');
+    
+    title.textContent = mediaFile.relative_path.split('/').pop();
+    
+    const streamUrl = `${API_BASE}/api/torrents/${torrentId}/stream/${mediaFile.index}`;
+    
+    videoPlayer.style.display = 'none';
+    audioPlayer.style.display = 'none';
+    
+    let activePlayer = null;
+    if (mediaFile.media_type === 'video') {
+        activePlayer = videoPlayer;
+        videoPlayer.style.display = 'block';
+    } else if (mediaFile.media_type === 'audio') {
+        activePlayer = audioPlayer;
+        audioPlayer.style.display = 'block';
+    }
+    
+    if (!activePlayer) return;
+    
+    // Clear existing tracks
+    activePlayer.innerHTML = '';
+    
+    // Auto-detect subtitle in the same folder with the same name (or just any SRT/VTT in the torrent)
+    const subFiles = allFiles.filter(f => f.media_type === 'subtitle');
+    subFiles.forEach((sub, i) => {
+        const track = document.createElement('track');
+        track.kind = 'subtitles';
+        track.label = sub.relative_path.split('/').pop();
+        track.srclang = 'en';
+        track.src = `${API_BASE}/api/torrents/${torrentId}/subtitle/${sub.index}`;
+        if (i === 0) track.default = true;
+        activePlayer.appendChild(track);
+    });
+    
+    activePlayer.src = streamUrl;
+    modal.style.display = 'flex';
+    activePlayer.play().catch(e => console.log('Auto-play blocked:', e));
+}
+
+function closeMediaModal(event) {
+    if (event.target.id === 'media-modal' || event.target.classList.contains('modal-close')) {
+        const modal = document.getElementById('media-modal');
+        const videoPlayer = document.getElementById('media-player');
+        const audioPlayer = document.getElementById('audio-player');
+        
+        modal.style.display = 'none';
+        videoPlayer.pause();
+        videoPlayer.src = '';
+        audioPlayer.pause();
+        audioPlayer.src = '';
     }
 }
 

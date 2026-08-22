@@ -27,7 +27,7 @@ from fastapi import (
     FastAPI, WebSocket, WebSocketDisconnect,
     UploadFile, File, HTTPException, BackgroundTasks, Request
 )
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, FileResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -1199,10 +1199,23 @@ class TorrentManager:
             for idx in range(files_storage.num_files()):
                 rel_path = files_storage.file_path(idx)
                 abs_path = save_path / rel_path
+                
+                # Determine media type for streaming support
+                ext = Path(rel_path).suffix.lower()
+                media_type = None
+                if ext in ('.mp4', '.mkv', '.avi', '.webm', '.mov'):
+                    media_type = 'video'
+                elif ext in ('.mp3', '.flac', '.wav', '.m4a', '.ogg'):
+                    media_type = 'audio'
+                elif ext in ('.srt', '.vtt', '.ass'):
+                    media_type = 'subtitle'
+                    
                 files.append({
+                    "index": idx,
                     "relative_path": rel_path,
                     "absolute_path": abs_path,
-                    "size": files_storage.file_size(idx)
+                    "size": files_storage.file_size(idx),
+                    "media_type": media_type
                 })
 
             return files, info.name()
@@ -1731,6 +1744,177 @@ async def list_torrent_files(torrent_id: str):
         raise HTTPException(status_code=404, detail="No files available yet. The torrent may still be downloading.")
 
     return available_files
+
+# -----------------------
+# Streaming & Downloading
+# -----------------------
+
+async def _stream_file_helper(request: Request, id: str, file_index: int, api_key: str, as_attachment: bool = False):
+    """Helper for streaming and direct downloading files with Range support"""
+    if REQUIRE_AUTH and api_key != API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid API Key")
+    elif not REQUIRE_AUTH and API_KEY and api_key != API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid API Key")
+        
+    try:
+        files, _ = torrent_manager.get_torrent_files(id)
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=str(e))
+        
+    if file_index < 0 or file_index >= len(files):
+        raise HTTPException(status_code=404, detail="File index out of bounds")
+        
+    file_info = files[file_index]
+    file_path = Path(file_info["absolute_path"])
+    file_size = file_info["size"]
+    
+    # Parse Range header
+    range_header = request.headers.get("Range", "")
+    start = 0
+    end = file_size - 1
+    
+    if range_header:
+        match = re.match(r"bytes=(\d+)-(\d*)", range_header)
+        if match:
+            start = int(match.group(1))
+            if match.group(2):
+                end = int(match.group(2))
+                
+    # Limit chunk size to 2MB to keep connections fresh and avoid huge memory buffers
+    chunk_size = min(end - start + 1, 1024 * 1024 * 2)
+    end = start + chunk_size - 1
+    
+    handle = torrent_manager.torrents.get(id)
+    info = None
+    if handle and handle.is_valid():
+        try:
+            info = handle.get_torrent_info()
+        except RuntimeError:
+            pass
+
+    async def file_streamer():
+        bytes_to_read = chunk_size
+        current_offset = start
+        
+        while bytes_to_read > 0:
+            if handle and info:
+                # Prioritize the piece we need right now
+                try:
+                    pr = info.map_file(file_index, current_offset, 1)[0]
+                    wait_time = 0
+                    # Wait up to ~45 seconds for the piece to avoid Heroku 55s timeout
+                    while not handle.have_piece(pr.piece) and wait_time < 45:
+                        handle.piece_priority(pr.piece, 7)
+                        handle.set_piece_deadline(pr.piece, 0, 1) # alert_when_available
+                        await asyncio.sleep(0.5)
+                        wait_time += 0.5
+                    
+                    if not handle.have_piece(pr.piece):
+                        # Heroku constraint: Break cleanly so the browser issues a new Range request
+                        break
+                except Exception as e:
+                    logger.debug(f"Piece priority error: {e}")
+                    
+            if not file_path.exists():
+                break
+                
+            try:
+                with open(file_path, "rb") as f:
+                    f.seek(current_offset)
+                    read_size = min(bytes_to_read, 65536)
+                    data = f.read(read_size)
+                    
+                    # If we read null bytes but we know the file isn't finished downloading,
+                    # libtorrent might have pre-allocated it sparsely.
+                    # Wait, if have_piece is true, data is valid. If we broke early, we don't read.
+                    if not data:
+                        break
+                    yield data
+                    current_offset += len(data)
+                    bytes_to_read -= len(data)
+            except Exception as e:
+                logger.error(f"Stream read error: {e}")
+                break
+
+    # Determine Content-Type
+    ext = file_path.suffix.lower()
+    media_types = {
+        '.mp4': 'video/mp4', '.webm': 'video/webm', '.mkv': 'video/x-matroska', '.avi': 'video/x-msvideo',
+        '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.ogg': 'audio/ogg', '.flac': 'audio/flac'
+    }
+    content_type = media_types.get(ext, 'application/octet-stream')
+    
+    headers = {
+        "Accept-Ranges": "bytes",
+        "Content-Length": str(chunk_size),
+        "Content-Type": content_type
+    }
+    if range_header:
+        headers["Content-Range"] = f"bytes {start}-{end}/{file_size}"
+        
+    if as_attachment:
+        filename = file_path.name.encode('utf-8', 'ignore').decode('utf-8')
+        headers["Content-Disposition"] = f'attachment; filename="{filename}"'
+        
+    return StreamingResponse(
+        file_streamer(), 
+        status_code=206 if range_header else 200, 
+        headers=headers
+    )
+
+@app.get("/api/torrents/{id}/stream/{file_index}")
+async def stream_file(request: Request, id: str, file_index: int, api_key: str = ""):
+    """Stream media file directly with Range support"""
+    return await _stream_file_helper(request, id, file_index, api_key, as_attachment=False)
+
+@app.get("/api/torrents/{id}/download/{file_index}")
+async def download_file(request: Request, id: str, file_index: int, api_key: str = ""):
+    """Download file directly"""
+    return await _stream_file_helper(request, id, file_index, api_key, as_attachment=True)
+
+@app.get("/api/torrents/{id}/subtitle/{file_index}")
+async def subtitle_file(id: str, file_index: int, api_key: str = ""):
+    """Serve subtitle, converting SRT to VTT on the fly for HTML5 compatibility"""
+    if REQUIRE_AUTH and api_key != API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid API Key")
+    elif not REQUIRE_AUTH and API_KEY and api_key != API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid API Key")
+        
+    try:
+        files, _ = torrent_manager.get_torrent_files(id)
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=str(e))
+        
+    if file_index < 0 or file_index >= len(files):
+        raise HTTPException(status_code=404, detail="File index out of bounds")
+        
+    file_info = files[file_index]
+    file_path = Path(file_info["absolute_path"])
+    
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="Subtitle file not found on disk yet")
+        
+    ext = file_path.suffix.lower()
+    
+    if ext == '.vtt':
+        return FileResponse(file_path, media_type="text/vtt")
+        
+    if ext == '.srt':
+        try:
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()
+            # Convert SRT to VTT
+            content = re.sub(r'(\d{2}:\d{2}:\d{2}),(\d{3})', r'\1.\2', content)
+            vtt_content = "WEBVTT\n\n" + content
+            return StreamingResponse(
+                iter([vtt_content.encode('utf-8')]), 
+                media_type="text/vtt"
+            )
+        except Exception as e:
+            logger.error(f"Subtitle conversion failed: {e}")
+            raise HTTPException(status_code=500, detail="Failed to parse subtitle")
+            
+    raise HTTPException(status_code=400, detail="Unsupported subtitle format")
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):

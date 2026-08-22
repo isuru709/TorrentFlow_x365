@@ -90,7 +90,22 @@
             </div>
         </section>
     </div>
+    <!-- Media Player Modal -->
+    <div id="media-modal" class="modal-overlay" style="display:none;" onclick="closeMediaModal(event)">
+        <div class="modal-content media-modal-content" style="max-width: 900px; width: 95%;">
+            <div class="modal-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                <h3 id="media-title" style="margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-right: 20px;">Playing Media</h3>
+                <button class="modal-close" onclick="closeMediaModal(event)" style="background: none; border: none; color: white; font-size: 24px; cursor: pointer;">&times;</button>
+            </div>
+            <div class="media-container" style="background: #000; border-radius: 8px; overflow: hidden;">
+                <video id="media-player" controls crossorigin="anonymous" playsinline style="width:100%; max-height:75vh; display:block;">
+                </video>
+                <audio id="audio-player" controls crossorigin="anonymous" style="width:100%; display:none; padding: 20px 0;">
+                </audio>
+            </div>
+        </div>
+    </div>
 
-    <script src="app.js?v=5"></script>
+    <script src="app.js?v=6"></script>
 </body>
 </html>
