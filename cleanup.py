@@ -76,12 +76,25 @@ def run_cleanup() -> dict:
     for d in [DOWNLOAD_DIR, TORRENT_DIR, TEMP_DIR, STATE_DIR] + FALLBACK_DIRS:
         all_dirs.add(d.resolve())
 
+    # Add system cache/temp locations
+    system_dirs = [
+        Path("/tmp"),
+        Path("/var/tmp"),
+        Path("/root/.cache"),
+        Path("/var/cache/apt"),
+    ]
+    for d in system_dirs:
+        if d.exists():
+            all_dirs.add(d.resolve())
+
     for directory in sorted(all_dirs):
-        logger.info(f"Cleaning directory: {directory}")
+        logger.info(f"Cleaning directory: {directory.absolute()}")
         result = _wipe_directory(directory)
         summary["directories"].append(result)
-        # Recreate the empty directory
-        directory.mkdir(parents=True, exist_ok=True)
+        
+        # Only recreate our app-specific directories
+        if directory not in [d.resolve() for d in system_dirs]:
+            directory.mkdir(parents=True, exist_ok=True)
 
     # 2. Explicitly remove known state files (in case STATE_DIR != /state)
     state_files = [

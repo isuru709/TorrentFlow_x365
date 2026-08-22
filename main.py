@@ -1298,6 +1298,19 @@ class TorrentManager:
                             logger.info(f"[SWARM] {torrent_id[:8]} | Seeds: {prev_counts[0]}->{status.num_seeds} | Peers: {prev_counts[1]}->{status.num_peers} | State: {status.state}")
                             last_peer_counts[torrent_id] = (status.num_seeds, status.num_peers)
                         
+                        # Check for fatal errors (Cleanup-on-failure)
+                        err_msg = ""
+                        if hasattr(status, 'errc') and status.errc and status.errc.value() != 0:
+                            err_msg = status.errc.message()
+                        elif hasattr(status, 'error') and status.error and str(status.error) != "":
+                            err_msg = str(status.error)
+                            
+                        if err_msg and "No error" not in err_msg and "Success" not in err_msg:
+                            logger.error(f"[SWARM] {torrent_id[:8]} | Fatal Error Detected: {err_msg}")
+                            logger.info(f"Triggering automatic cleanup-on-failure for {torrent_id[:8]}")
+                            asyncio.create_task(self.remove_torrent(torrent_id, delete_files=True))
+                            continue
+
                         # Periodic re-announce for low-seeder torrents (every 5 mins)
                         now = time.time()
                         last_ann = last_reannounce.get(torrent_id, now)
@@ -1458,6 +1471,79 @@ async def admin_clean(api_key: str = ""):
     except Exception as e:
         logger.error(f"Manual cleanup failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+def _get_dir_size_mb(path: Path) -> float:
+    """Recursively calculate directory size in MB safely"""
+    total = 0
+    if not path.exists():
+        return 0.0
+    try:
+        for f in path.rglob('*'):
+            if f.is_file() and not f.is_symlink():
+                total += f.stat().st_size
+    except Exception as e:
+        logger.warning(f"Error reading size of {path}: {e}")
+    return round(total / (1024 * 1024), 2)
+
+@app.get("/admin/disk-usage")
+async def admin_disk_usage(api_key: str = ""):
+    """Diagnostic endpoint to track down exactly what is consuming space"""
+    if REQUIRE_AUTH and api_key != API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid API Key")
+    elif not REQUIRE_AUTH and API_KEY and api_key != API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid API Key")
+
+    directories_to_check = {
+        "DOWNLOAD_DIR": DOWNLOAD_DIR,
+        "TORRENT_DIR": TORRENT_DIR,
+        "TEMP_DIR": TEMP_DIR,
+        "STATE_DIR": STATE_DIR,
+        "SYSTEM_TMP": Path("/tmp"),
+        "VAR_TMP": Path("/var/tmp"),
+        "PIP_CACHE": Path("/root/.cache"),
+        "APT_CACHE": Path("/var/cache/apt"),
+        "APP_DIR": Path("/app"),
+    }
+
+    breakdown = {}
+    total_tracked_mb = 0.0
+
+    for name, path in directories_to_check.items():
+        if path.exists():
+            size_mb = _get_dir_size_mb(path)
+            breakdown[name] = {
+                "path": str(path.absolute()),
+                "size_mb": size_mb
+            }
+            total_tracked_mb += size_mb
+        else:
+            breakdown[name] = {
+                "path": str(path.absolute()),
+                "size_mb": 0.0,
+                "note": "Directory does not exist"
+            }
+            
+    # Include base storage metrics for context
+    import shutil
+    try:
+        disk_usage = shutil.disk_usage(DOWNLOAD_DIR)
+        system_total = round(disk_usage.total / (1024**2), 2)
+        system_used = round(disk_usage.used / (1024**2), 2)
+        system_free = round(disk_usage.free / (1024**2), 2)
+    except OSError:
+        system_total = system_used = system_free = 0.0
+
+    return {
+        "success": True,
+        "system_storage_mb": {
+            "total": system_total,
+            "used": system_used,
+            "free": system_free,
+        },
+        "tracked_total_mb": round(total_tracked_mb, 2),
+        "untracked_mb": round(system_used - total_tracked_mb, 2) if system_used > total_tracked_mb else 0.0,
+        "breakdown": breakdown
+    }
 
 @app.post("/api/download", response_model=dict)
 async def add_torrent_download(request: TorrentAddRequest):
