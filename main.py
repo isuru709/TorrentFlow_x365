@@ -140,6 +140,7 @@ class TorrentManager:
         self.completed_torrents: Dict[str, TorrentInfo] = {}
         self.completed_files: Dict[str, dict] = {}
         self._available = LIBTORRENT_AVAILABLE
+        self._pending_removals: Set[str] = set()  # torrent IDs being deleted — skip in monitor loop
         
     async def initialize(self):
         """Initialize libtorrent session"""
@@ -254,6 +255,26 @@ class TorrentManager:
     # -----------------------
     # State Persistence
     # -----------------------
+    def _serialize_resume_alert(self, alert) -> bytes:
+        """Convert a save_resume_data_alert to bencoded bytes.
+        
+        libtorrent 2.x: alert.params is add_torrent_params → use write_resume_data_buf()
+        libtorrent 1.x fallback: alert.resume_data is a dict → bencode directly
+        """
+        # Try libtorrent 2.x API first (add_torrent_params based)
+        if hasattr(alert, 'params'):
+            params_obj = alert.params
+            if hasattr(lt, 'write_resume_data_buf'):
+                return lt.write_resume_data_buf(params_obj)
+            elif hasattr(lt, 'write_resume_data'):
+                return lt.bencode(lt.write_resume_data(params_obj))
+        
+        # Fallback: libtorrent 1.x dict-based API
+        if hasattr(alert, 'resume_data') and isinstance(alert.resume_data, dict):
+            return lt.bencode(alert.resume_data)
+        
+        raise RuntimeError("Cannot serialize resume data: unsupported libtorrent API")
+
     async def save_all_state(self):
         """Save resume data + metadata for every torrent so they survive restarts."""
         if not self._available or not self.session:
@@ -264,6 +285,9 @@ class TorrentManager:
         # 1. Save libtorrent resume data for every active torrent
         handles_to_save: Dict[str, object] = {}
         for torrent_id, handle in list(self.torrents.items()):
+            # Skip torrents being deleted
+            if torrent_id in self._pending_removals:
+                continue
             try:
                 if handle.is_valid():
                     handle.save_resume_data(
@@ -287,19 +311,25 @@ class TorrentManager:
                             try:
                                 if h.is_valid() and h.info_hash() == alert.handle.info_hash():
                                     resume_path = STATE_DIR / f"{tid}.fastresume"
-                                    resume_data = lt.bencode(lt.write_resume_data(alert.resume_data))
+                                    resume_data = self._serialize_resume_alert(alert)
                                     resume_path.write_bytes(resume_data)
                                     remaining -= 1
                                     logger.debug(f"Saved resume data for {tid}")
                                     break
-                            except (RuntimeError, AttributeError):
-                                pass
+                            except Exception as e:
+                                logger.warning(f"Failed to serialize resume data for {tid}: {e}")
+                                remaining -= 1
+                                break
                     elif isinstance(alert, lt.save_resume_data_failed_alert):
                         remaining -= 1
                 if remaining > 0:
                     await asyncio.sleep(0.1)
         
         # 3. Persist metadata, completed torrents, and completed files as JSON
+        self._save_state_json()
+        
+    def _save_state_json(self):
+        """Write the current in-memory state to state.json (no libtorrent calls)."""
         state = {
             "torrent_metadata": {},
             "completed_torrents": {},
@@ -409,9 +439,9 @@ class TorrentManager:
                 # Load resume data if available
                 if resume_path.exists():
                     try:
-                        resume_data = lt.bdecode(resume_path.read_bytes())
-                        params['resume_data'] = lt.bencode(resume_data) if not isinstance(resume_data, bytes) else resume_path.read_bytes()
-                    except (RuntimeError, OSError) as e:
+                        # In libtorrent 2.x, resume data is opaque bencoded bytes
+                        params['resume_data'] = resume_path.read_bytes()
+                    except OSError as e:
                         logger.warning(f"Bad resume data for {tid}: {e}")
                 
                 # Prefer .torrent file, then magnet/info_hash
@@ -888,40 +918,154 @@ class TorrentManager:
             torrent_file.unlink(missing_ok=True)
             raise HTTPException(status_code=400, detail=str(e))
     
-    def remove_torrent(self, torrent_id: str, delete_files: bool = False):
-        """Remove a torrent"""
+    async def remove_torrent(self, torrent_id: str, delete_files: bool = False):
+        """Remove a torrent with proper async cleanup.
+        
+        - Marks torrent as pending-removal so the monitor loop skips it.
+        - Removes from libtorrent session (with delete_files flag if requested).
+        - Waits for libtorrent's delete alert to confirm file removal.
+        - Manually verifies + cleans up any leftover files.
+        - Removes .fastresume file and .torrent file.
+        - Purges from in-memory dicts and persists state.json.
+        - Broadcasts an immediate WebSocket update.
+        """
         if torrent_id in self.torrents:
+            # 1. Guard: prevent monitor loop from touching this handle
+            self._pending_removals.add(torrent_id)
+            logger.info(f"[DELETE] Starting removal of active torrent {torrent_id} (delete_files={delete_files})")
+            
             handle = self.torrents[torrent_id]
-
-            # Remove from session
-            if delete_files:
-                self.session.remove_torrent(handle, lt.options_t.delete_files)
-            else:
-                self.session.remove_torrent(handle)
-
-            # Cleanup
-            del self.torrents[torrent_id]
-            if torrent_id in self.torrent_metadata:
-                metadata = self.torrent_metadata[torrent_id]
-                if 'torrent_file' in metadata:
-                    Path(metadata['torrent_file']).unlink(missing_ok=True)
-                del self.torrent_metadata[torrent_id]
-            # Remove cached zip if present
+            metadata = self.torrent_metadata.get(torrent_id, {})
+            save_path = metadata.get('save_path', str(DOWNLOAD_DIR))
+            
+            # Snapshot file paths before removal so we can verify cleanup
+            file_paths = []
+            try:
+                if handle.is_valid():
+                    torrent_info = handle.get_torrent_info()
+                    files_storage = torrent_info.files()
+                    for idx in range(files_storage.num_files()):
+                        rel_path = files_storage.file_path(idx)
+                        file_paths.append(Path(save_path) / rel_path)
+            except RuntimeError:
+                pass  # metadata not yet available (magnet still resolving)
+            
+            # 2. Remove from libtorrent session
+            try:
+                if delete_files:
+                    # Try libtorrent 2.x API first, then 1.x
+                    try:
+                        self.session.remove_torrent(handle, lt.remove_flags_t.delete_files)
+                    except AttributeError:
+                        self.session.remove_torrent(handle, lt.options_t.delete_files)
+                else:
+                    self.session.remove_torrent(handle)
+                logger.info(f"[DELETE] Torrent {torrent_id} removed from libtorrent session")
+            except RuntimeError as e:
+                logger.warning(f"[DELETE] session.remove_torrent failed for {torrent_id}: {e}")
+            
+            # 3. Wait for libtorrent delete alert (up to 5 seconds)
+            if delete_files and self.session:
+                deadline = time.time() + 5
+                delete_confirmed = False
+                while time.time() < deadline:
+                    alerts = self.session.pop_alerts()
+                    for alert in alerts:
+                        alert_type = type(alert).__name__
+                        if alert_type in ('torrent_deleted_alert', 'torrent_removed_alert'):
+                            delete_confirmed = True
+                            logger.info(f"[DELETE] Received {alert_type} for {torrent_id}")
+                            break
+                        elif alert_type == 'torrent_delete_failed_alert':
+                            logger.warning(f"[DELETE] Received torrent_delete_failed_alert for {torrent_id}: {alert.message()}")
+                            delete_confirmed = True  # proceed to manual cleanup
+                            break
+                    if delete_confirmed:
+                        break
+                    await asyncio.sleep(0.1)
+                
+                if not delete_confirmed:
+                    logger.warning(f"[DELETE] No delete alert received within 5s for {torrent_id}, proceeding with manual cleanup")
+            
+            # 4. Manual file cleanup — verify libtorrent actually deleted them
+            if delete_files and file_paths:
+                leftover_count = 0
+                for fp in file_paths:
+                    if fp.exists():
+                        try:
+                            fp.unlink()
+                            leftover_count += 1
+                        except OSError as e:
+                            logger.warning(f"[DELETE] Could not remove leftover file {fp}: {e}")
+                if leftover_count:
+                    logger.info(f"[DELETE] Manually removed {leftover_count} leftover file(s) for {torrent_id}")
+                
+                # Also remove .parts temp files if they exist
+                parts_dir = Path(save_path) / ".parts"
+                if parts_dir.exists():
+                    import shutil
+                    try:
+                        shutil.rmtree(parts_dir)
+                        logger.info(f"[DELETE] Removed .parts directory for {torrent_id}")
+                    except OSError as e:
+                        logger.warning(f"[DELETE] Could not remove .parts directory: {e}")
+                
+                # Clean up empty directories
+                for fp in file_paths:
+                    parent = fp.parent
+                    while parent != Path(save_path) and parent != parent.parent:
+                        try:
+                            parent.rmdir()  # only succeeds if empty
+                            parent = parent.parent
+                        except OSError:
+                            break
+            
+            # 5. Remove .fastresume file
+            resume_path = STATE_DIR / f"{torrent_id}.fastresume"
+            if resume_path.exists():
+                resume_path.unlink(missing_ok=True)
+                logger.info(f"[DELETE] Removed resume file {resume_path.name}")
+            
+            # 6. Remove .torrent file
+            if 'torrent_file' in metadata:
+                Path(metadata['torrent_file']).unlink(missing_ok=True)
+                logger.info(f"[DELETE] Removed .torrent file")
+            
+            # 7. Remove cached zip
             zip_path = TEMP_DIR / f"{torrent_id}.zip"
             zip_path.unlink(missing_ok=True)
             
-            logger.info(f"Removed torrent {torrent_id}")
+            # 8. Purge from all in-memory dicts
+            self.torrents.pop(torrent_id, None)
+            self.torrent_metadata.pop(torrent_id, None)
+            self.completed_torrents.pop(torrent_id, None)
+            self.completed_files.pop(torrent_id, None)
+            self._pending_removals.discard(torrent_id)
+            
+            # 9. Persist state.json so torrent doesn't reappear on restart
+            self._save_state_json()
+            
+            # 10. Broadcast removal to WebSocket clients immediately
+            logger.info(f"[DELETE] Cleanup complete for {torrent_id}, broadcasting update")
+            await self.broadcast_update()
             return
 
         if torrent_id in self.completed_torrents:
+            logger.info(f"[DELETE] Removing completed torrent {torrent_id} (delete_files={delete_files})")
+            
             if delete_files:
                 entry = self.completed_files.get(torrent_id, {})
                 files_entry = entry.get("files", [])
+                removed_count = 0
                 for file_entry in files_entry:
                     try:
-                        Path(file_entry["absolute_path"]).unlink(missing_ok=True)
-                    except (OSError, KeyError):
-                        pass
+                        fp = Path(file_entry["absolute_path"])
+                        if fp.exists():
+                            fp.unlink()
+                            removed_count += 1
+                    except (OSError, KeyError) as e:
+                        logger.warning(f"[DELETE] Could not remove completed file: {e}")
+                logger.info(f"[DELETE] Removed {removed_count}/{len(files_entry)} completed files")
 
                 # Attempt to clean up empty directories under save_path
                 save_path = entry.get("save_path") or self.torrent_metadata.get(torrent_id, {}).get('save_path')
@@ -939,19 +1083,31 @@ class TorrentManager:
                     except OSError:
                         pass
 
+            # Remove .fastresume file
+            resume_path = STATE_DIR / f"{torrent_id}.fastresume"
+            resume_path.unlink(missing_ok=True)
+            
+            # Remove .torrent file
+            metadata = self.torrent_metadata.get(torrent_id, {})
+            if 'torrent_file' in metadata:
+                Path(metadata['torrent_file']).unlink(missing_ok=True)
+
+            # Purge from all in-memory dicts
             self.completed_torrents.pop(torrent_id, None)
             self.completed_files.pop(torrent_id, None)
-            if torrent_id in self.torrent_metadata:
-                metadata = self.torrent_metadata[torrent_id]
-                if 'torrent_file' in metadata:
-                    Path(metadata['torrent_file']).unlink(missing_ok=True)
-                del self.torrent_metadata[torrent_id]
+            self.torrent_metadata.pop(torrent_id, None)
 
             # Remove cached zip if present
             zip_path = TEMP_DIR / f"{torrent_id}.zip"
             zip_path.unlink(missing_ok=True)
+            
+            # Persist state.json
+            self._save_state_json()
 
-            logger.info(f"Removed completed torrent {torrent_id}")
+            logger.info(f"[DELETE] Completed torrent {torrent_id} fully cleaned up")
+            
+            # Broadcast removal
+            await self.broadcast_update()
             return
 
         raise HTTPException(status_code=404, detail="Torrent not found")
@@ -1102,36 +1258,58 @@ class TorrentManager:
             logger.error(f"Error broadcasting update: {e}")
     
     async def monitor_torrents(self):
-        """Background task to monitor torrents and send updates"""
+        """Background task to monitor torrents and send updates.
+        
+        CRITICAL: State saving and WebSocket broadcasting are in separate
+        try/except blocks so a failure in one never blocks the other.
+        """
         last_state_save = time.time()
         STATE_SAVE_INTERVAL = 60  # Save state every 60 seconds
         
         while True:
             try:
-                await asyncio.sleep(1.0)  # Update every 1s (balanced CPU vs responsiveness)
-                
-                # Check for completed torrents
+                await asyncio.sleep(1.0)  # Update every 1s
+            except Exception:
+                continue
+            
+            # --- Phase 1: Check for completed torrents ---
+            try:
                 for torrent_id, handle in list(self.torrents.items()):
+                    # Skip torrents being deleted
+                    if torrent_id in self._pending_removals:
+                        continue
                     try:
+                        if not handle.is_valid():
+                            continue
                         status = handle.status()
                         # Stop seeding once complete (keep files)
                         if status.progress >= 1.0:
                             self.stop_if_completed(torrent_id, handle, status)
                     except RuntimeError as e:
                         logger.debug(f"Error checking torrent status: {e}")
-                
-                # Periodically save state to protect against crashes
+            except Exception as e:
+                logger.error(f"Error in monitor completion check: {e}")
+            
+            # --- Phase 2: Periodically save state (isolated) ---
+            try:
                 now = time.time()
                 if now - last_state_save >= STATE_SAVE_INTERVAL:
                     try:
                         await self.save_all_state()
                         last_state_save = now
-                    except OSError as e:
+                    except Exception as e:
                         logger.error(f"Periodic state save failed: {e}")
-                
-                # Only serialize and broadcast when clients are connected
+                        last_state_save = now  # Don't retry every second
+            except Exception as e:
+                logger.error(f"Error in monitor state save phase: {e}")
+            
+            # --- Phase 3: WebSocket broadcast (completely isolated from Phase 2) ---
+            try:
                 if self.websocket_clients:
                     torrents_data = [info.model_dump() for info in self.list_torrents()]
+                    client_count = len(self.websocket_clients)
+                    logger.debug(f"Broadcasting progress to {client_count} client(s): {len(torrents_data)} torrent(s)")
+                    
                     disconnected = []
                     for client in list(self.websocket_clients):
                         try:
@@ -1145,8 +1323,11 @@ class TorrentManager:
                     for client in disconnected:
                         self.websocket_clients.discard(client)
                     
+                    sent_count = client_count - len(disconnected)
+                    if disconnected:
+                        logger.info(f"Broadcast sent to {sent_count}/{client_count} clients ({len(disconnected)} disconnected)")
             except Exception as e:
-                logger.error(f"Error in monitor task: {e}")
+                logger.error(f"Error in monitor broadcast phase: {e}")
 
 # -----------------------
 # Global Manager Instance
@@ -1300,7 +1481,7 @@ async def get_torrent(torrent_id: str):
 @app.delete("/api/torrents/{torrent_id}")
 async def delete_torrent(torrent_id: str, delete_files: bool = False):
     """Remove a torrent"""
-    torrent_manager.remove_torrent(torrent_id, delete_files)
+    await torrent_manager.remove_torrent(torrent_id, delete_files)
     return {"success": True, "message": "Torrent removed"}
 
 @app.post("/api/torrents/{torrent_id}/pause")
