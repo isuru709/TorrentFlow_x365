@@ -939,120 +939,143 @@ class TorrentManager:
             self._pending_removals.add(torrent_id)
             logger.info(f"[DELETE] Starting removal of active torrent {torrent_id} (delete_files={delete_files})")
             
-            handle = self.torrents[torrent_id]
-            metadata = self.torrent_metadata.get(torrent_id, {})
-            save_path = metadata.get('save_path', str(DOWNLOAD_DIR))
-            
-            # Snapshot file paths before removal so we can verify cleanup
-            file_paths = []
             try:
-                if handle.is_valid():
-                    torrent_info = handle.get_torrent_info()
-                    files_storage = torrent_info.files()
-                    for idx in range(files_storage.num_files()):
-                        rel_path = files_storage.file_path(idx)
-                        file_paths.append(Path(save_path) / rel_path)
-            except RuntimeError:
-                pass  # metadata not yet available (magnet still resolving)
-            
-            # 2. Remove from libtorrent session
-            try:
+                handle = self.torrents[torrent_id]
+                metadata = self.torrent_metadata.get(torrent_id, {})
+                save_path = metadata.get('save_path', str(DOWNLOAD_DIR))
+                
+                # Snapshot file paths before removal so we can verify cleanup
+                file_paths = []
+                try:
+                    if handle.is_valid():
+                        torrent_info = handle.get_torrent_info()
+                        if torrent_info is not None:
+                            files_storage = torrent_info.files()
+                            for idx in range(files_storage.num_files()):
+                                rel_path = files_storage.file_path(idx)
+                                file_paths.append(Path(save_path) / rel_path)
+                        else:
+                            logger.warning(f"No torrent_info available for {torrent_id} (likely magnet with no metadata yet) — falling back to path-based deletion")
+                            status = handle.status()
+                            if status.name:
+                                file_paths.append(Path(save_path) / status.name)
+                except Exception as e:
+                    logger.warning(f"[DELETE] Could not read metadata for {torrent_id}: {e}")
+                
+                # 2. Remove from libtorrent session
+                try:
+                    if delete_files:
+                        # Try libtorrent 2.x API first, then 1.x
+                        try:
+                            self.session.remove_torrent(handle, lt.remove_flags_t.delete_files)
+                        except AttributeError:
+                            self.session.remove_torrent(handle, lt.options_t.delete_files)
+                    else:
+                        self.session.remove_torrent(handle)
+                    logger.info(f"[DELETE] Torrent {torrent_id} removed from libtorrent session")
+                except Exception as e:
+                    logger.warning(f"[DELETE] session.remove_torrent failed for {torrent_id}: {e}")
+                
+                # 3. Wait for libtorrent delete alert (up to 5 seconds)
+                try:
+                    if delete_files and self.session:
+                        deadline = time.time() + 5
+                        delete_confirmed = False
+                        while time.time() < deadline:
+                            alerts = self.session.pop_alerts()
+                            for alert in alerts:
+                                alert_type = type(alert).__name__
+                                if alert_type in ('torrent_deleted_alert', 'torrent_removed_alert'):
+                                    delete_confirmed = True
+                                    logger.info(f"[DELETE] Received {alert_type} for {torrent_id}")
+                                    break
+                                elif alert_type == 'torrent_delete_failed_alert':
+                                    logger.warning(f"[DELETE] Received torrent_delete_failed_alert for {torrent_id}: {alert.message()}")
+                                    delete_confirmed = True  # proceed to manual cleanup
+                                    break
+                            if delete_confirmed:
+                                break
+                            await asyncio.sleep(0.1)
+                        
+                        if not delete_confirmed:
+                            logger.warning(f"[DELETE] No delete alert received within 5s for {torrent_id}, proceeding with manual cleanup")
+                except Exception as e:
+                    logger.warning(f"[DELETE] Error while waiting for deletion alerts: {e}")
+                
+                # 4. Manual file cleanup — verify libtorrent actually deleted them
                 if delete_files:
-                    # Try libtorrent 2.x API first, then 1.x
                     try:
-                        self.session.remove_torrent(handle, lt.remove_flags_t.delete_files)
-                    except AttributeError:
-                        self.session.remove_torrent(handle, lt.options_t.delete_files)
-                else:
-                    self.session.remove_torrent(handle)
-                logger.info(f"[DELETE] Torrent {torrent_id} removed from libtorrent session")
-            except RuntimeError as e:
-                logger.warning(f"[DELETE] session.remove_torrent failed for {torrent_id}: {e}")
-            
-            # 3. Wait for libtorrent delete alert (up to 5 seconds)
-            if delete_files and self.session:
-                deadline = time.time() + 5
-                delete_confirmed = False
-                while time.time() < deadline:
-                    alerts = self.session.pop_alerts()
-                    for alert in alerts:
-                        alert_type = type(alert).__name__
-                        if alert_type in ('torrent_deleted_alert', 'torrent_removed_alert'):
-                            delete_confirmed = True
-                            logger.info(f"[DELETE] Received {alert_type} for {torrent_id}")
-                            break
-                        elif alert_type == 'torrent_delete_failed_alert':
-                            logger.warning(f"[DELETE] Received torrent_delete_failed_alert for {torrent_id}: {alert.message()}")
-                            delete_confirmed = True  # proceed to manual cleanup
-                            break
-                    if delete_confirmed:
-                        break
-                    await asyncio.sleep(0.1)
+                        leftover_count = 0
+                        for fp in file_paths:
+                            if fp.exists():
+                                try:
+                                    if fp.is_dir():
+                                        import shutil
+                                        shutil.rmtree(fp)
+                                    else:
+                                        fp.unlink()
+                                    leftover_count += 1
+                                except OSError as e:
+                                    logger.warning(f"[DELETE] Could not remove leftover {fp}: {e}")
+                        if leftover_count:
+                            logger.info(f"[DELETE] Manually removed {leftover_count} leftover items for {torrent_id}")
+                        
+                        # Also remove .parts temp files if they exist
+                        parts_dir = Path(save_path) / ".parts"
+                        if parts_dir.exists():
+                            import shutil
+                            try:
+                                shutil.rmtree(parts_dir)
+                                logger.info(f"[DELETE] Removed .parts directory for {torrent_id}")
+                            except OSError as e:
+                                logger.warning(f"[DELETE] Could not remove .parts directory: {e}")
+                        
+                        # Clean up empty directories
+                        for fp in file_paths:
+                            parent = fp.parent
+                            while parent != Path(save_path) and parent != parent.parent:
+                                try:
+                                    parent.rmdir()  # only succeeds if empty
+                                    parent = parent.parent
+                                except OSError:
+                                    break
+                    except Exception as e:
+                        logger.error(f"[DELETE] Unexpected error during manual file cleanup: {e}")
                 
-                if not delete_confirmed:
-                    logger.warning(f"[DELETE] No delete alert received within 5s for {torrent_id}, proceeding with manual cleanup")
-            
-            # 4. Manual file cleanup — verify libtorrent actually deleted them
-            if delete_files and file_paths:
-                leftover_count = 0
-                for fp in file_paths:
-                    if fp.exists():
-                        try:
-                            fp.unlink()
-                            leftover_count += 1
-                        except OSError as e:
-                            logger.warning(f"[DELETE] Could not remove leftover file {fp}: {e}")
-                if leftover_count:
-                    logger.info(f"[DELETE] Manually removed {leftover_count} leftover file(s) for {torrent_id}")
+                # 5-7. Remove state files
+                try:
+                    resume_path = STATE_DIR / f"{torrent_id}.fastresume"
+                    if resume_path.exists():
+                        resume_path.unlink(missing_ok=True)
+                        logger.info(f"[DELETE] Removed resume file {resume_path.name}")
+                    
+                    if 'torrent_file' in metadata:
+                        Path(metadata['torrent_file']).unlink(missing_ok=True)
+                        logger.info(f"[DELETE] Removed .torrent file")
+                    
+                    zip_path = TEMP_DIR / f"{torrent_id}.zip"
+                    zip_path.unlink(missing_ok=True)
+                except Exception as e:
+                    logger.warning(f"[DELETE] Error cleaning state files: {e}")
+                    
+            finally:
+                # 8. Always purge from all in-memory dicts
+                self.torrents.pop(torrent_id, None)
+                self.torrent_metadata.pop(torrent_id, None)
+                self.completed_torrents.pop(torrent_id, None)
+                self.completed_files.pop(torrent_id, None)
+                self._pending_removals.discard(torrent_id)
                 
-                # Also remove .parts temp files if they exist
-                parts_dir = Path(save_path) / ".parts"
-                if parts_dir.exists():
-                    import shutil
-                    try:
-                        shutil.rmtree(parts_dir)
-                        logger.info(f"[DELETE] Removed .parts directory for {torrent_id}")
-                    except OSError as e:
-                        logger.warning(f"[DELETE] Could not remove .parts directory: {e}")
+                # 9. Persist state.json so torrent doesn't reappear on restart
+                try:
+                    self._save_state_json()
+                except Exception as e:
+                    logger.error(f"[DELETE] Failed to save state.json: {e}")
                 
-                # Clean up empty directories
-                for fp in file_paths:
-                    parent = fp.parent
-                    while parent != Path(save_path) and parent != parent.parent:
-                        try:
-                            parent.rmdir()  # only succeeds if empty
-                            parent = parent.parent
-                        except OSError:
-                            break
+                # 10. Broadcast removal to WebSocket clients immediately
+                logger.info(f"[DELETE] Cleanup complete for {torrent_id}, broadcasting update")
+                await self.broadcast_update()
             
-            # 5. Remove .fastresume file
-            resume_path = STATE_DIR / f"{torrent_id}.fastresume"
-            if resume_path.exists():
-                resume_path.unlink(missing_ok=True)
-                logger.info(f"[DELETE] Removed resume file {resume_path.name}")
-            
-            # 6. Remove .torrent file
-            if 'torrent_file' in metadata:
-                Path(metadata['torrent_file']).unlink(missing_ok=True)
-                logger.info(f"[DELETE] Removed .torrent file")
-            
-            # 7. Remove cached zip
-            zip_path = TEMP_DIR / f"{torrent_id}.zip"
-            zip_path.unlink(missing_ok=True)
-            
-            # 8. Purge from all in-memory dicts
-            self.torrents.pop(torrent_id, None)
-            self.torrent_metadata.pop(torrent_id, None)
-            self.completed_torrents.pop(torrent_id, None)
-            self.completed_files.pop(torrent_id, None)
-            self._pending_removals.discard(torrent_id)
-            
-            # 9. Persist state.json so torrent doesn't reappear on restart
-            self._save_state_json()
-            
-            # 10. Broadcast removal to WebSocket clients immediately
-            logger.info(f"[DELETE] Cleanup complete for {torrent_id}, broadcasting update")
-            await self.broadcast_update()
             return
 
         if torrent_id in self.completed_torrents:
@@ -1138,10 +1161,14 @@ class TorrentManager:
         
         metadata = self.torrent_metadata.get(torrent_id, {})
         
+        state_str = str(status.state)
+        if not status.has_metadata:
+            state_str = "fetching metadata"
+            
         return TorrentInfo(
             id=torrent_id,
-            name=status.name,
-            state=str(status.state),
+            name=status.name or torrent_id,
+            state=state_str,
             progress=status.progress * 100,
             download_rate=status.download_rate,
             upload_rate=status.upload_rate,
