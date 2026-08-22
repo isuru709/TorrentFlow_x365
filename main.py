@@ -577,7 +577,7 @@ class TorrentManager:
             logger.error(f"Failed to download torrent file: {e}")
             raise HTTPException(status_code=400, detail=f"Could not download torrent: {str(e)}")
     
-    async def add_from_url(self, url: str, save_path: Optional[str] = None, sequential: bool = False) -> str:
+    async def add_from_url(self, url: str, save_path: Optional[str] = None, sequential: bool = True) -> str:
         """
         Smart torrent adder - handles magnet links, torrent URLs, and info hashes
         """
@@ -587,7 +587,7 @@ class TorrentManager:
         torrent_id = str(uuid.uuid4())
         
         params = {
-            'save_path': str(save_path or DOWNLOAD_DIR),
+            'save_path': str(save_path or (DOWNLOAD_DIR / torrent_id)),
             'storage_mode': lt.storage_mode_t.storage_mode_sparse,
             'flags': lt.torrent_flags.auto_managed | lt.torrent_flags.duplicate_is_error,
         }
@@ -873,7 +873,7 @@ class TorrentManager:
         except RuntimeError as e:
             logger.warning(f"Failed to stop seeding for {torrent_id}: {e}")
     
-    def add_torrent_file(self, torrent_data: bytes, save_path: Optional[str] = None, sequential: bool = False) -> str:
+    def add_torrent_file(self, torrent_data: bytes, save_path: Optional[str] = None, sequential: bool = True) -> str:
         """Add torrent from .torrent file"""
         self._require_session()
         
@@ -884,7 +884,7 @@ class TorrentManager:
         torrent_file.write_bytes(torrent_data)
         
         params = {
-            'save_path': str(save_path or DOWNLOAD_DIR),
+            'save_path': str(save_path or (DOWNLOAD_DIR / torrent_id)),
             'storage_mode': lt.storage_mode_t.storage_mode_sparse,
             'ti': lt.torrent_info(str(torrent_file)),
             'flags': lt.torrent_flags.auto_managed | lt.torrent_flags.duplicate_is_error,

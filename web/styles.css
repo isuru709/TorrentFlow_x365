@@ -716,6 +716,27 @@ kbd {
     to   { width: 0%; }
 }
 
+/* ---------- Media Player Modal ---------- */
+.modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.85);
+    backdrop-filter: blur(15px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 12000;
+}
+
+.media-modal-content {
+    background: var(--bg-glass-heavy);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-lg);
+    padding: 20px;
+    box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+    animation: fadeIn 0.2s ease;
+}
+
 /* ---------- File Picker Modal ---------- */
 .file-picker-backdrop {
     position: fixed;
