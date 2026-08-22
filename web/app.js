@@ -86,7 +86,7 @@ function stopPolling() {
 async function addMagnet() {
     const input = document.getElementById('magnet-input');
     const url = input.value.trim();
-    const sequential = document.getElementById('sequential-download').checked;
+    const sequential = true;
 
     if (!url) {
         showNotification('Please enter a magnet link, torrent URL, or info hash', 'error');
@@ -161,7 +161,7 @@ async function addMagnet() {
 async function uploadTorrent() {
     const fileInput = document.getElementById('torrent-file');
     const file = fileInput.files[0];
-    const sequential = document.getElementById('sequential-download').checked;
+    const sequential = true;
 
     if (!file) return;
 
