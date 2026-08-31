@@ -71,10 +71,14 @@ def run_cleanup() -> dict:
 
     summary = {"directories": [], "state_files": [], "db_redis": "not configured"}
 
-    # 1. Wipe data directories
+    # 1. Wipe data directories (NOT state — state is reconciled on app startup)
     all_dirs = set()
-    for d in [DOWNLOAD_DIR, TORRENT_DIR, TEMP_DIR, STATE_DIR] + FALLBACK_DIRS:
-        all_dirs.add(d.resolve())
+    for d in [DOWNLOAD_DIR, TORRENT_DIR, TEMP_DIR] + FALLBACK_DIRS:
+        # Skip state directories — they must survive deploys
+        resolved = d.resolve()
+        if resolved == STATE_DIR.resolve() or resolved == Path("/state").resolve():
+            continue
+        all_dirs.add(resolved)
 
     # Add system cache/temp locations
     system_dirs = [
@@ -96,24 +100,10 @@ def run_cleanup() -> dict:
         if directory not in [d.resolve() for d in system_dirs]:
             directory.mkdir(parents=True, exist_ok=True)
 
-    # 2. Explicitly remove known state files (in case STATE_DIR != /state)
-    state_files = [
-        STATE_DIR / "state.json",
-        Path("/state/state.json"),
-    ]
-    # Also catch any stray .fastresume files
-    for sd in [STATE_DIR, Path("/state")]:
-        if sd.exists():
-            state_files.extend(sd.glob("*.fastresume"))
-
-    for sf in set(state_files):
-        if sf.exists():
-            try:
-                sf.unlink()
-                logger.info(f"  [STATE] Removed {sf}")
-                summary["state_files"].append(str(sf))
-            except OSError as e:
-                logger.warning(f"  [ERR]   Could not remove {sf}: {e}")
+    # 2. State files are NOT deleted here.
+    # The app's startup reconciliation (load_all_state) handles orphaned entries
+    # by checking if files still exist on disk after an ephemeral FS reset.
+    logger.info("  [STATE] Preserved state.json (reconciled on app startup)")
 
     # 3. Check for DATABASE_URL / REDIS_URL add-ons
     database_url = os.getenv("DATABASE_URL")

@@ -11,6 +11,7 @@ import uuid
 import json
 import zipfile
 import re
+import shutil
 from pathlib import Path
 from typing import Dict, List, Optional, Set
 from contextlib import asynccontextmanager
@@ -494,6 +495,103 @@ class TorrentManager:
                 logger.error(f"Failed to restore torrent {tid}: {e}")
         
         logger.info(f"State restored: {restored_active} active, {restored_completed} completed")
+        
+        # --- Startup Reconciliation ---
+        # After an ephemeral FS reset (Heroku dyno restart), downloaded files are gone
+        # but state.json may still reference them. Prune stale completed entries.
+        await self._reconcile_state()
+        
+        # Clean up orphan download directories not tracked by any torrent
+        self._cleanup_orphan_directories()
+    
+    async def _reconcile_state(self):
+        """Remove completed torrent entries whose files no longer exist on disk.
+        
+        This handles the case where Heroku's ephemeral filesystem was wiped
+        (daily dyno restart) but state.json survived (because cleanup.py
+        preserves it). Without this, the UI would show ghost torrents that
+        can't be downloaded or played.
+        """
+        stale_ids = []
+        
+        for tid, entry in list(self.completed_files.items()):
+            files = entry.get("files", [])
+            if not files:
+                stale_ids.append(tid)
+                continue
+            
+            # Check if ANY file from this torrent still exists on disk
+            any_exists = False
+            for f in files:
+                abs_path = f.get("absolute_path")
+                if abs_path and Path(abs_path).exists():
+                    any_exists = True
+                    break
+            
+            if not any_exists:
+                stale_ids.append(tid)
+        
+        if stale_ids:
+            logger.info(f"[RECONCILE] Pruning {len(stale_ids)} completed torrent(s) whose files no longer exist on disk")
+            for tid in stale_ids:
+                # Clean up the save_path directory if it still exists (leftover .parts, etc.)
+                entry = self.completed_files.get(tid, {})
+                save_path = entry.get("save_path")
+                if save_path:
+                    sp = Path(save_path)
+                    if sp.exists() and sp.is_dir():
+                        try:
+                            shutil.rmtree(sp)
+                            logger.info(f"  [RECONCILE] Wiped orphan directory: {sp}")
+                        except OSError as e:
+                            logger.warning(f"  [RECONCILE] Could not wipe {sp}: {e}")
+                
+                self.completed_torrents.pop(tid, None)
+                self.completed_files.pop(tid, None)
+                self.torrent_metadata.pop(tid, None)
+                logger.info(f"  [RECONCILE] Removed stale entry: {tid}")
+            
+            # Persist the cleaned state
+            self._save_state_json()
+            logger.info(f"[RECONCILE] State saved after pruning {len(stale_ids)} stale entries")
+        else:
+            logger.info("[RECONCILE] All completed torrents verified — no stale entries found")
+    
+    def _cleanup_orphan_directories(self):
+        """Remove download subdirectories not tracked by any torrent ID.
+        
+        Each torrent downloads into DOWNLOAD_DIR/<torrent_id>/. If the app
+        crashes or a delete partially fails, orphan directories can linger.
+        This scans for them on startup and reclaims disk space.
+        """
+        if not DOWNLOAD_DIR.exists():
+            return
+        
+        # Gather all known torrent IDs (active + completed + metadata)
+        known_ids = set(self.torrents.keys())
+        known_ids.update(self.completed_torrents.keys())
+        known_ids.update(self.completed_files.keys())
+        known_ids.update(self.torrent_metadata.keys())
+        
+        orphan_count = 0
+        reclaimed_bytes = 0
+        
+        for child in DOWNLOAD_DIR.iterdir():
+            if child.is_dir() and child.name not in known_ids:
+                try:
+                    # Calculate size before deletion
+                    dir_size = sum(f.stat().st_size for f in child.rglob('*') if f.is_file())
+                    shutil.rmtree(child)
+                    orphan_count += 1
+                    reclaimed_bytes += dir_size
+                    logger.info(f"  [ORPHAN] Removed orphan directory: {child.name} ({dir_size / (1024*1024):.1f} MB)")
+                except OSError as e:
+                    logger.warning(f"  [ORPHAN] Could not remove {child}: {e}")
+        
+        if orphan_count > 0:
+            logger.info(f"[ORPHAN] Cleaned {orphan_count} orphan directories, reclaimed {reclaimed_bytes / (1024*1024):.1f} MB")
+        else:
+            logger.info("[ORPHAN] No orphan download directories found")
     
     async def download_torrent_file(self, url: str) -> bytes:
         """Download .torrent file from URL with advanced anti-bot bypass"""
@@ -1055,6 +1153,15 @@ class TorrentManager:
                                     parent = parent.parent
                                 except OSError:
                                     break
+                        
+                        # Wipe the entire isolated save_path directory
+                        sp = Path(save_path)
+                        if sp.exists() and sp.is_dir() and sp != DOWNLOAD_DIR:
+                            try:
+                                shutil.rmtree(sp)
+                                logger.info(f"[DELETE] Wiped torrent save directory: {sp}")
+                            except OSError as e:
+                                logger.warning(f"[DELETE] Could not wipe save directory {sp}: {e}")
                     except Exception as e:
                         logger.error(f"[DELETE] Unexpected error during manual file cleanup: {e}")
                 
@@ -1099,33 +1206,40 @@ class TorrentManager:
             
             if delete_files:
                 entry = self.completed_files.get(torrent_id, {})
-                files_entry = entry.get("files", [])
-                removed_count = 0
-                for file_entry in files_entry:
-                    try:
-                        fp = Path(file_entry["absolute_path"])
-                        if fp.exists():
-                            fp.unlink()
-                            removed_count += 1
-                    except (OSError, KeyError) as e:
-                        logger.warning(f"[DELETE] Could not remove completed file: {e}")
-                logger.info(f"[DELETE] Removed {removed_count}/{len(files_entry)} completed files")
-
-                # Attempt to clean up empty directories under save_path
                 save_path = entry.get("save_path") or self.torrent_metadata.get(torrent_id, {}).get('save_path')
+                
+                # Each torrent is isolated in DOWNLOAD_DIR/<torrent_id>/
+                # Wipe the entire directory instead of file-by-file
                 if save_path:
-                    try:
-                        p = Path(save_path)
-                        for parent in [p] + list(p.parents):
-                            if str(parent) == '/':
-                                break
-                            if parent.exists():
+                    sp = Path(save_path)
+                    if sp.exists() and sp.is_dir():
+                        try:
+                            shutil.rmtree(sp)
+                            logger.info(f"[DELETE] Wiped torrent directory: {sp}")
+                        except OSError as e:
+                            logger.warning(f"[DELETE] Could not wipe directory {sp}: {e}")
+                            # Fallback: try file-by-file
+                            files_entry = entry.get("files", [])
+                            for file_entry in files_entry:
                                 try:
-                                    parent.rmdir()
-                                except OSError:
-                                    break
-                    except OSError:
-                        pass
+                                    fp = Path(file_entry["absolute_path"])
+                                    if fp.exists():
+                                        fp.unlink()
+                                except (OSError, KeyError) as e2:
+                                    logger.warning(f"[DELETE] Fallback file removal failed: {e2}")
+                else:
+                    # No save_path — try file-by-file from completed_files
+                    files_entry = entry.get("files", [])
+                    removed_count = 0
+                    for file_entry in files_entry:
+                        try:
+                            fp = Path(file_entry["absolute_path"])
+                            if fp.exists():
+                                fp.unlink()
+                                removed_count += 1
+                        except (OSError, KeyError) as e:
+                            logger.warning(f"[DELETE] Could not remove completed file: {e}")
+                    logger.info(f"[DELETE] Removed {removed_count}/{len(files_entry)} completed files")
 
             # Remove .fastresume file
             resume_path = STATE_DIR / f"{torrent_id}.fastresume"
