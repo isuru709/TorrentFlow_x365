@@ -123,6 +123,7 @@ class TorrentInfo(BaseModel):
     eta: int
     save_path: str
     added_time: float
+    files_available: bool = True
 
 class TorrentFileInfo(BaseModel):
     path: str
@@ -505,16 +506,22 @@ class TorrentManager:
         self._cleanup_orphan_directories()
     
     async def _reconcile_state(self):
-        """Remove completed torrent entries whose files no longer exist on disk.
+        """Mark completed torrent entries whose files no longer exist on disk.
         
         This handles the case where Heroku's ephemeral filesystem was wiped
         (daily dyno restart) but state.json survived (because cleanup.py
-        preserves it). Without this, the UI would show ghost torrents that
-        can't be downloaded or played.
+        preserves it). Instead of deleting the entries (which makes torrents
+        disappear from the UI), we mark them as files_available=False so the
+        user can still see them and manually delete or re-download.
         """
         stale_ids = []
         
         for tid, entry in list(self.completed_files.items()):
+            # Skip entries already marked as unavailable
+            meta = self.torrent_metadata.get(tid, {})
+            if meta.get('files_available') is False:
+                continue
+            
             files = entry.get("files", [])
             if not files:
                 stale_ids.append(tid)
@@ -532,7 +539,7 @@ class TorrentManager:
                 stale_ids.append(tid)
         
         if stale_ids:
-            logger.info(f"[RECONCILE] Pruning {len(stale_ids)} completed torrent(s) whose files no longer exist on disk")
+            logger.info(f"[RECONCILE] Marking {len(stale_ids)} completed torrent(s) as files unavailable (filesystem wiped)")
             for tid in stale_ids:
                 # Clean up the save_path directory if it still exists (leftover .parts, etc.)
                 entry = self.completed_files.get(tid, {})
@@ -546,14 +553,21 @@ class TorrentManager:
                         except OSError as e:
                             logger.warning(f"  [RECONCILE] Could not wipe {sp}: {e}")
                 
-                self.completed_torrents.pop(tid, None)
-                self.completed_files.pop(tid, None)
-                self.torrent_metadata.pop(tid, None)
-                logger.info(f"  [RECONCILE] Removed stale entry: {tid}")
+                # Mark as files unavailable instead of removing
+                meta = self.torrent_metadata.get(tid, {})
+                meta['files_available'] = False
+                self.torrent_metadata[tid] = meta
+                
+                # Update the completed torrent info to reflect unavailability
+                if tid in self.completed_torrents:
+                    info = self.completed_torrents[tid]
+                    self.completed_torrents[tid] = info.model_copy(update={'files_available': False})
+                
+                logger.info(f"  [RECONCILE] Marked as files unavailable: {tid}")
             
-            # Persist the cleaned state
+            # Persist the updated state
             self._save_state_json()
-            logger.info(f"[RECONCILE] State saved after pruning {len(stale_ids)} stale entries")
+            logger.info(f"[RECONCILE] State saved after marking {len(stale_ids)} entries as files unavailable")
         else:
             logger.info("[RECONCILE] All completed torrents verified — no stale entries found")
     
@@ -942,7 +956,8 @@ class TorrentManager:
                     ratio=ratio,
                     eta=0,
                     save_path=save_path,
-                    added_time=metadata.get('added_time', time.time())
+                    added_time=metadata.get('added_time', time.time()),
+                    files_available=True
                 )
                 self.completed_torrents[torrent_id] = completed_info
                 self.completed_files[torrent_id] = {
@@ -1268,6 +1283,56 @@ class TorrentManager:
             await self.broadcast_update()
             return
 
+        # Fallback: entry exists only in metadata or completed_files (orphaned state)
+        if torrent_id in self.torrent_metadata or torrent_id in self.completed_files:
+            logger.info(f"[DELETE] Removing orphaned torrent entry {torrent_id}")
+            
+            if delete_files:
+                # Try to find and clean up any files from metadata or completed_files
+                save_path = None
+                entry = self.completed_files.get(torrent_id, {})
+                if entry:
+                    save_path = entry.get("save_path")
+                if not save_path:
+                    meta = self.torrent_metadata.get(torrent_id, {})
+                    save_path = meta.get('save_path')
+                
+                if save_path:
+                    sp = Path(save_path)
+                    if sp.exists() and sp.is_dir():
+                        try:
+                            shutil.rmtree(sp)
+                            logger.info(f"[DELETE] Wiped orphan directory: {sp}")
+                        except OSError as e:
+                            logger.warning(f"[DELETE] Could not wipe orphan directory {sp}: {e}")
+            
+            # Remove .fastresume file
+            resume_path = STATE_DIR / f"{torrent_id}.fastresume"
+            resume_path.unlink(missing_ok=True)
+            
+            # Remove .torrent file
+            metadata = self.torrent_metadata.get(torrent_id, {})
+            if 'torrent_file' in metadata:
+                Path(metadata['torrent_file']).unlink(missing_ok=True)
+            
+            # Remove cached zip
+            zip_path = TEMP_DIR / f"{torrent_id}.zip"
+            zip_path.unlink(missing_ok=True)
+            
+            # Purge from all in-memory dicts
+            self.completed_torrents.pop(torrent_id, None)
+            self.completed_files.pop(torrent_id, None)
+            self.torrent_metadata.pop(torrent_id, None)
+            
+            # Persist state.json
+            self._save_state_json()
+            
+            logger.info(f"[DELETE] Orphaned entry {torrent_id} fully cleaned up")
+            
+            # Broadcast removal
+            await self.broadcast_update()
+            return
+
         raise HTTPException(status_code=404, detail="Torrent not found")
     
     def get_torrent_info(self, torrent_id: str) -> TorrentInfo:
@@ -1290,6 +1355,7 @@ class TorrentManager:
         ratio = status.all_time_upload / max(status.all_time_download, 1)
         
         metadata = self.torrent_metadata.get(torrent_id, {})
+        files_available = metadata.get('files_available', True)
         
         state_str = str(status.state)
         if not status.has_metadata:
@@ -1310,7 +1376,8 @@ class TorrentManager:
             ratio=ratio,
             eta=eta,
             save_path=metadata.get('save_path', str(DOWNLOAD_DIR)),
-            added_time=metadata.get('added_time', 0)
+            added_time=metadata.get('added_time', 0),
+            files_available=files_available
         )
 
     def get_torrent_files(self, torrent_id: str):

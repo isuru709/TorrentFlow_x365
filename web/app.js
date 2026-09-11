@@ -280,12 +280,43 @@ function updateTorrentElement(element, torrent) {
     const downloaded = torrent.downloaded || 0;
     const ratio = torrent.ratio || 0;
     const eta = torrent.eta || -1;
+    const filesAvailable = torrent.files_available !== false;
 
     element.dataset.state = state;
+    element.dataset.filesAvailable = String(filesAvailable);
 
     const progressFill = element.querySelector('.progress-fill');
     if (progressFill) {
         progressFill.style.width = `${progress.toFixed(1)}%`;
+    }
+
+    // Update badge for completed torrents with unavailable files
+    const nameEl = element.querySelector('.torrent-name');
+    if (nameEl) {
+        const stateLower = (state || '').toLowerCase();
+        const isCompleted = progress >= 100 || stateLower.includes('complete');
+        
+        // Remove existing badges
+        const existingBadges = nameEl.querySelectorAll('.done-badge, .seed-badge, .unavailable-badge');
+        existingBadges.forEach(b => b.remove());
+        
+        if (isCompleted && !filesAvailable) {
+            const badge = document.createElement('span');
+            badge.className = 'unavailable-badge';
+            badge.textContent = '⚠️ Files Unavailable';
+            nameEl.appendChild(badge);
+        } else if (isCompleted) {
+            const badge = document.createElement('span');
+            badge.className = 'done-badge';
+            badge.textContent = '✅ Completed';
+            nameEl.appendChild(badge);
+        }
+    }
+
+    // Update download button disabled state
+    const downloadBtn = element.querySelector('.btn-download');
+    if (downloadBtn) {
+        downloadBtn.disabled = !filesAvailable;
     }
 
     const stats = {
@@ -321,20 +352,28 @@ function createTorrentHTML(torrent) {
     const downloaded = torrent.downloaded || 0;
     const ratio = torrent.ratio || 0;
     const eta = torrent.eta || -1;
+    const filesAvailable = torrent.files_available !== false;
 
     const stateLower = (state || '').toLowerCase();
     const isCompleted = progress >= 100 || stateLower.includes('complete');
     const isSeeding = !isCompleted && (stateLower.includes('seeding') || stateLower.includes('seed'));
-    const badge = isCompleted
-        ? '<span class="done-badge">✅ Completed</span>'
-        : (isSeeding ? '<span class="seed-badge">🌱 Seeding</span>' : '');
+    
+    let badge = '';
+    if (isCompleted && !filesAvailable) {
+        badge = '<span class="unavailable-badge">⚠️ Files Unavailable</span>';
+    } else if (isCompleted) {
+        badge = '<span class="done-badge">✅ Completed</span>';
+    } else if (isSeeding) {
+        badge = '<span class="seed-badge">🌱 Seeding</span>';
+    }
 
     const isPaused = stateLower.includes('pause') || stateLower.includes('stop');
     const pauseDisabled = (isPaused || isCompleted) ? 'disabled' : '';
     const resumeDisabled = (!isPaused || isCompleted) ? 'disabled' : '';
+    const downloadDisabled = !filesAvailable ? 'disabled' : '';
 
     return `
-        <div class="torrent-item" data-torrent-id="${id}" data-state="${state}">
+        <div class="torrent-item" data-torrent-id="${id}" data-state="${state}" data-files-available="${filesAvailable}">
             <div class="torrent-header">
                 <div class="torrent-name" title="${escapeHtml(name)}">
                     ${escapeHtml(name)} ${badge}
@@ -343,7 +382,7 @@ function createTorrentHTML(torrent) {
                     <button type="button" class="btn-copy-magnet" data-id="${id}" data-name="${escapeHtml(name)}" title="Copy Magnet Link">📋 Magnet</button>
                     <button type="button" class="btn-pause" data-id="${id}" title="Pause" ${pauseDisabled}>⏸ Pause</button>
                     <button type="button" class="btn-resume" data-id="${id}" title="Resume" ${resumeDisabled}>▶ Resume</button>
-                    <button type="button" class="btn-download" data-id="${id}" title="Download files">⬇ Files</button>
+                    <button type="button" class="btn-download" data-id="${id}" title="Download files" ${downloadDisabled}>⬇ Files</button>
                     <button type="button" class="btn-delete" data-id="${id}" title="Delete">🗑 Delete</button>
                 </div>
             </div>
