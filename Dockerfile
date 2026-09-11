@@ -7,6 +7,7 @@ LABEL description="TorrentFlow x365 — High-Speed Torrent Downloader"
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-libtorrent \
     curl \
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 # Make system-installed libtorrent visible to the container's Python
@@ -38,5 +39,5 @@ EXPOSE ${PORT} 6881-6889
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
     CMD curl -f http://localhost:${PORT}/health || exit 1
 
-# Run application (shell form is required for Heroku $PORT expansion)
-CMD uvicorn main:app --host 0.0.0.0 --port $PORT --workers 1
+# Run application (auto-update yt-dlp first, then start server)
+CMD pip install -U yt-dlp && uvicorn main:app --host 0.0.0.0 --port $PORT --workers 1

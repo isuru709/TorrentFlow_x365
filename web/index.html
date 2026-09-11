@@ -45,7 +45,13 @@
             </div>
         </header>
 
-        <section class="add-torrent" id="add-section">
+        <div class="tabs-container">
+            <button class="tab-btn active" id="tab-torrent" onclick="switchTab('torrent')">Torrents</button>
+            <button class="tab-btn" id="tab-media" onclick="switchTab('media')">Media Downloader</button>
+        </div>
+
+        <div id="view-torrent">
+            <section class="add-torrent" id="add-section">
             <div class="section-header">
                 <h2>Add New Download</h2>
                 <span class="section-hint">Supports magnet links, torrent URLs, info hashes &amp; .torrent files</span>
@@ -84,6 +90,49 @@
                 </div>
             </div>
         </section>
+        </div>
+
+        <div id="view-media" style="display:none;">
+            <section class="add-torrent" id="media-add-section">
+                <div class="section-header">
+                    <h2>Add Media URL</h2>
+                    <span class="section-hint">Supports YouTube, Twitter, TikTok, etc.</span>
+                </div>
+                <div class="input-group">
+                    <div class="input-wrapper">
+                        <span class="input-icon">📺</span>
+                        <input type="text" id="media-url-input"
+                               placeholder="Paste video or playlist URL…"
+                               autocomplete="off" spellcheck="false">
+                        <button class="input-paste-btn" id="media-paste-btn" title="Paste from clipboard" onclick="pasteMediaUrl()">📋</button>
+                    </div>
+                    <button class="btn btn-primary" id="probe-btn" onclick="probeMedia()">
+                        <span class="btn-icon">🔍</span> Probe
+                    </button>
+                </div>
+                <div class="options-row" style="margin-top:10px;">
+                    <label class="checkbox-label" style="display:flex; align-items:center; gap:8px;">
+                        <input type="checkbox" id="media-playlist-check"> Download full playlist (up to 50 items)
+                    </label>
+                </div>
+                <div id="media-probe-result" style="display:none; margin-top:15px; background:rgba(0,0,0,0.2); padding:15px; border-radius:8px;">
+                    <!-- Populated by JS -->
+                </div>
+            </section>
+
+            <section class="torrents-list">
+                <div class="section-header">
+                    <h2>Media Downloads</h2>
+                </div>
+                <div id="media-jobs-container">
+                    <div class="empty-state">
+                        <div class="empty-icon">📺</div>
+                        <p>No media downloads</p>
+                        <span>Paste a URL to download videos or playlists</span>
+                    </div>
+                </div>
+            </section>
+        </div>
     </div>
     <!-- Media Player Modal -->
     <div id="media-modal" class="modal-overlay" style="display:none;" onclick="closeMediaModal(event)">

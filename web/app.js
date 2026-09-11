@@ -49,7 +49,8 @@ function connectWebSocket() {
         try {
             const data = JSON.parse(event.data);
             if (data.type === 'update') {
-                updateTorrentsList(data.torrents);
+                if (data.torrents) updateTorrentsList(data.torrents);
+                if (data.media_jobs) updateMediaList(data.media_jobs);
             }
         } catch (e) {
             console.error('WS parse error:', e);
@@ -284,6 +285,7 @@ function updateTorrentElement(element, torrent) {
 
     element.dataset.state = state;
     element.dataset.filesAvailable = String(filesAvailable);
+    element.dataset.jobType = torrent.job_type || 'torrent';
 
     const progressFill = element.querySelector('.progress-fill');
     if (progressFill) {
@@ -371,17 +373,18 @@ function createTorrentHTML(torrent) {
     const pauseDisabled = (isPaused || isCompleted) ? 'disabled' : '';
     const resumeDisabled = (!isPaused || isCompleted) ? 'disabled' : '';
     const downloadDisabled = !filesAvailable ? 'disabled' : '';
+    const isMedia = torrent.job_type === 'media';
 
     return `
-        <div class="torrent-item" data-torrent-id="${id}" data-state="${state}" data-files-available="${filesAvailable}">
+        <div class="torrent-item" data-torrent-id="${id}" data-state="${state}" data-files-available="${filesAvailable}" data-job-type="${torrent.job_type || 'torrent'}">
             <div class="torrent-header">
                 <div class="torrent-name" title="${escapeHtml(name)}">
                     ${escapeHtml(name)} ${badge}
                 </div>
                 <div class="torrent-actions">
-                    <button type="button" class="btn-copy-magnet" data-id="${id}" data-name="${escapeHtml(name)}" title="Copy Magnet Link">📋 Magnet</button>
-                    <button type="button" class="btn-pause" data-id="${id}" title="Pause" ${pauseDisabled}>⏸ Pause</button>
-                    <button type="button" class="btn-resume" data-id="${id}" title="Resume" ${resumeDisabled}>▶ Resume</button>
+                    ${isMedia ? '' : `<button type="button" class="btn-copy-magnet" data-id="${id}" data-name="${escapeHtml(name)}" title="Copy Magnet Link">📋 Magnet</button>`}
+                    ${isMedia ? '' : `<button type="button" class="btn-pause" data-id="${id}" title="Pause" ${pauseDisabled}>⏸ Pause</button>`}
+                    ${isMedia ? '' : `<button type="button" class="btn-resume" data-id="${id}" title="Resume" ${resumeDisabled}>▶ Resume</button>`}
                     <button type="button" class="btn-download" data-id="${id}" title="Download files" ${downloadDisabled}>⬇ Files</button>
                     <button type="button" class="btn-delete" data-id="${id}" title="Delete">🗑 Delete</button>
                 </div>
@@ -408,10 +411,11 @@ function createTorrentHTML(torrent) {
                     <span class="stat-label">Upload</span>
                     <span class="stat-value">↑ ${formatSpeed(uploadRate)}</span>
                 </div>
+                ${isMedia ? '' : `
                 <div class="stat-item">
                     <span class="stat-label">Peers</span>
                     <span class="stat-value">${numPeers} (${numSeeds} seeds)</span>
-                </div>
+                </div>`}
                 <div class="stat-item">
                     <span class="stat-label">Size</span>
                     <span class="stat-value">${formatBytes(totalSize)}</span>
@@ -437,10 +441,7 @@ function createTorrentHTML(torrent) {
 // Event Listeners (Delegation)
 // ---------------------------------------------------------
 function setupTorrentEventListeners() {
-    const container = document.getElementById('torrents-container');
-    if (!container) return;
-
-    container.addEventListener('click', (e) => {
+    const handleActionClick = (e) => {
         const target = e.target.closest('button');
         if (!target) return;
 
@@ -449,11 +450,13 @@ function setupTorrentEventListeners() {
 
         e.preventDefault();
         e.stopPropagation();
+        const item = target.closest('.torrent-item');
+        const jobType = item ? item.dataset.jobType : 'torrent';
 
         if (target.classList.contains('btn-pause'))         pauseTorrent(torrentId);
         else if (target.classList.contains('btn-resume'))   resumeTorrent(torrentId);
-        else if (target.classList.contains('btn-download')) downloadTorrent(torrentId);
-        else if (target.classList.contains('btn-delete'))   deleteTorrent(torrentId);
+        else if (target.classList.contains('btn-download')) downloadTorrent(torrentId, jobType);
+        else if (target.classList.contains('btn-delete'))   deleteTorrent(torrentId, jobType);
         else if (target.classList.contains('btn-copy-magnet')) {
             const name = target.dataset.name || torrentId;
             const magnetUri = `magnet:?xt=urn:btih:${torrentId}&dn=${encodeURIComponent(name)}`;
@@ -463,7 +466,13 @@ function setupTorrentEventListeners() {
                 setTimeout(() => target.innerHTML = orig, 2000);
             }).catch(() => showNotification('Failed to copy', 'error'));
         }
-    });
+    };
+
+    const container = document.getElementById('torrents-container');
+    if (container) container.addEventListener('click', handleActionClick);
+    
+    const mediaContainer = document.getElementById('media-jobs-container');
+    if (mediaContainer) mediaContainer.addEventListener('click', handleActionClick);
 
     window.__torrentListenersAttached = true;
 }
@@ -495,10 +504,12 @@ async function resumeTorrent(id) {
     }
 }
 
-async function downloadTorrent(id) {
+async function downloadTorrent(id, jobType = 'torrent') {
     if (!id) return;
+    window.currentModalJobType = jobType;
     try {
-        const response = await fetch(`${API_BASE}/api/torrents/${id}/files`);
+        const route = jobType === 'media' ? 'media' : 'torrents';
+        const response = await fetch(`${API_BASE}/api/${route}/${id}/files`);
         const files = await response.json();
 
         if (!response.ok) {
@@ -519,10 +530,11 @@ async function downloadTorrent(id) {
 
 function triggerDownload(torrentId, relativePath = null, asZip = false) {
     const link = document.createElement('a');
+    const route = window.currentModalJobType === 'media' ? 'media' : 'torrents';
     if (asZip || !relativePath) {
-        link.href = `${API_BASE}/api/torrents/${torrentId}/download`;
+        link.href = `${API_BASE}/api/${route}/${torrentId}/download`;
     } else {
-        link.href = `${API_BASE}/api/torrents/${torrentId}/download?file=${encodeURIComponent(relativePath)}`;
+        link.href = `${API_BASE}/api/${route}/${torrentId}/download?file=${encodeURIComponent(relativePath)}`;
     }
     link.target = '_blank';
     link.rel = 'noopener';
@@ -588,9 +600,15 @@ function showFilePicker(torrentId, files) {
         const copyBtn = row.querySelector('.file-picker-copy');
         if (copyBtn) {
             copyBtn.addEventListener('click', () => {
+                const fileExt = file.relative_path.split('.').pop().toLowerCase();
+                const mediaType = file.media_type;
+                const isPlayable = mediaType === 'video' || mediaType === 'audio' || ['mp4', 'mkv', 'webm', 'mp3', 'm4a'].includes(fileExt);
+
+                const route = window.currentModalJobType === 'media' ? 'media' : 'torrents';
+                const dlLink = `${API_BASE}/api/${route}/${torrentId}/download?file_index=${file.index}`;
                 const directUrl = file.index !== undefined && file.index !== null
-                    ? `${API_BASE}/api/torrents/${torrentId}/download/${file.index}`
-                    : `${API_BASE}/api/torrents/${torrentId}/download?file=${encodeURIComponent(file.relative_path)}`;
+                    ? dlLink
+                    : `${API_BASE}/api/${route}/${torrentId}/download?file=${encodeURIComponent(file.relative_path)}`;
                 
                 navigator.clipboard.writeText(directUrl).then(() => {
                     copyBtn.innerHTML = '✅';
@@ -631,29 +649,30 @@ function showFilePicker(torrentId, files) {
     document.body.appendChild(backdrop);
 }
 
-async function deleteTorrent(id) {
+async function deleteTorrent(id, jobType = 'torrent') {
     if (!id) return;
-    if (!confirm('⚠️ Remove this torrent and delete all data?')) return;
+
+    const route = jobType === 'media' ? 'media' : 'torrents';
+
+    const deleteFiles = confirm('⚠️ Do you also want to delete the files from disk?\n\nClick OK to delete files & torrent, or Cancel to only remove from list.');
 
     try {
-        const response = await fetch(`${API_BASE}/api/torrents/${id}?delete_files=true`, { method: 'DELETE' });
-        if (!response.ok) {
-            const errorData = await response.json().catch(() => ({}));
-            throw new Error(errorData.detail || `HTTP ${response.status}`);
-        }
-
-        showNotification('✓ Torrent removed', 'success');
-
-        const el = document.querySelector(`[data-torrent-id="${id}"]`);
-        if (el) {
-            el.style.opacity = '0';
-            el.style.transform = 'scale(0.95)';
-            setTimeout(() => loadTorrents(), 300);
+        if (deleteFiles) {
+            const response = await fetch(`${API_BASE}/api/${route}/${id}?delete_files=true`, {
+                method: 'DELETE'
+            });
+            if (!response.ok) throw new Error(response.statusText);
+            showNotification('🗑️ Item and files deleted', 'success');
         } else {
-            loadTorrents();
+            const response = await fetch(`${API_BASE}/api/${route}/${id}?delete_files=false`, {
+                method: 'DELETE'
+            });
+            if (!response.ok) throw new Error(response.statusText);
+            showNotification('🗑️ Item removed from list', 'success');
         }
+        setTimeout(loadTorrents, 500);
     } catch (error) {
-        showNotification(`❌ Error: ${error.message}`, 'error');
+        showNotification(`❌ Error removing item: ${error.message}`, 'error');
         loadTorrents();
     }
 }
@@ -707,7 +726,8 @@ function playMedia(torrentId, mediaFile, allFiles) {
     
     title.textContent = mediaFile.relative_path.split('/').pop();
     
-    const streamUrl = `${API_BASE}/api/torrents/${torrentId}/stream/${mediaFile.index}`;
+    const route = window.currentModalJobType === 'media' ? 'media' : 'torrents';
+    const streamUrl = `${API_BASE}/api/${route}/${torrentId}/stream/${mediaFile.index}`;
     
     videoPlayer.style.display = 'none';
     audioPlayer.style.display = 'none';
@@ -891,3 +911,140 @@ document.addEventListener('DOMContentLoaded', () => {
 
     setInterval(updateStorageInfo, 30000);
 });
+// =========================================================
+// Media Engine Functions
+// =========================================================
+
+function switchTab(tab) {
+    document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+    document.getElementById('tab-' + tab).classList.add('active');
+    
+    if (tab === 'torrent') {
+        document.getElementById('view-torrent').style.display = 'block';
+        document.getElementById('view-media').style.display = 'none';
+    } else {
+        document.getElementById('view-torrent').style.display = 'none';
+        document.getElementById('view-media').style.display = 'block';
+    }
+}
+
+async function pasteMediaUrl() {
+    try {
+        const text = await navigator.clipboard.readText();
+        document.getElementById('media-url-input').value = text;
+    } catch (err) {
+        showNotification('Failed to read clipboard', 'error');
+    }
+}
+
+async function probeMedia() {
+    const url = document.getElementById('media-url-input').value.trim();
+    if (!url) return showNotification('Please enter a URL', 'error');
+    
+    const btn = document.getElementById('probe-btn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="btn-icon">⏳</span> Probing...';
+    
+    try {
+        const res = await fetch(`${API_BASE}/api/media/probe`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({url})
+        });
+        const data = await res.json();
+        
+        if (!res.ok) throw new Error(data.detail || 'Probe failed');
+        
+        const resultDiv = document.getElementById('media-probe-result');
+        resultDiv.style.display = 'block';
+        
+        let html = `<h4>${escapeHtml(data.title)}</h4>`;
+        if (data.is_playlist) {
+            html += `<p style="margin-bottom:10px;">Playlist with ${data.playlist_count} items</p>`;
+            html += `<button class="btn btn-primary" onclick="startMediaDownload('${url}', null, true)">Download Playlist</button>`;
+        } else {
+            let options = '';
+            data.formats.slice(-10).forEach(f => {
+                options += `<option value="${f.format_id}" ${f.is_default ? 'selected' : ''}>${f.resolution} (${f.ext})</option>`;
+            });
+            html += `
+                <select id="media-format-select" class="file-picker-select" style="margin: 10px 0;">
+                    ${options}
+                </select>
+                <br>
+                <label style="display:flex; align-items:center; gap:8px; margin-bottom:10px;"><input type="checkbox" id="media-subs-check"> Embed Subtitles</label>
+                <button class="btn btn-primary" onclick="startMediaDownload('${url}', document.getElementById('media-format-select').value, false, document.getElementById('media-subs-check').checked)">Download Media</button>
+            `;
+        }
+        resultDiv.innerHTML = html;
+    } catch (e) {
+        showNotification(`Error: ${e.message}`, 'error');
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<span class="btn-icon">🔍</span> Probe';
+    }
+}
+
+async function startMediaDownload(url, format_id, is_playlist, embed_subs = false) {
+    const overridePlaylist = document.getElementById('media-playlist-check').checked;
+    
+    try {
+        const res = await fetch(`${API_BASE}/api/media/download`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                url, 
+                format_id, 
+                embed_subtitles: embed_subs,
+                is_playlist: overridePlaylist || is_playlist
+            })
+        });
+        const data = await res.json();
+        if (res.ok) {
+            showNotification('Download started', 'success');
+            document.getElementById('media-probe-result').style.display = 'none';
+            document.getElementById('media-url-input').value = '';
+        } else {
+            throw new Error(data.detail || 'Failed to start download');
+        }
+    } catch (e) {
+        showNotification(`Error: ${e.message}`, 'error');
+    }
+}
+
+function updateMediaList(jobs) {
+    const container = document.getElementById('media-jobs-container');
+    if (!container) return;
+
+    if (!jobs || jobs.length === 0) {
+        container.innerHTML = '<div class="empty-state"><div class="empty-icon">📺</div><p>No media downloads</p><span>Paste a URL to download videos or playlists</span></div>';
+        return;
+    }
+
+    container.querySelectorAll('.empty-state').forEach(el => el.remove());
+
+    const existingJobs = {};
+    container.querySelectorAll('.torrent-item').forEach(item => {
+        const id = item.dataset.torrentId;
+        if (id) existingJobs[id] = item;
+    });
+
+    jobs.forEach((job) => {
+        const id = job.id || '';
+        if (existingJobs[id]) {
+            updateTorrentElement(existingJobs[id], job);
+            delete existingJobs[id];
+        } else {
+            const html = createTorrentHTML(job);
+            const tempDiv = document.createElement('div');
+            tempDiv.innerHTML = html;
+            container.appendChild(tempDiv.firstElementChild);
+        }
+    });
+
+    Object.values(existingJobs).forEach(element => {
+        element.style.opacity = '0';
+        element.style.transform = 'scale(0.96)';
+        setTimeout(() => element.remove(), 300);
+    });
+}
