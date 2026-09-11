@@ -1634,6 +1634,7 @@ async def lifespan(app: FastAPI):
     """Application lifespan manager"""
     if MEDIA_ENGINE_AVAILABLE:
         media_manager.websocket_clients = torrent_manager.websocket_clients
+        media_manager.start_monitor()
     await torrent_manager.initialize()
     yield
     await torrent_manager.shutdown()

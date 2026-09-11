@@ -40,10 +40,13 @@ class MediaManager:
         self.completed_files: Dict[str, dict] = {}
         
         self.websocket_clients = set() # Will be shared from main.py
+        self.monitor_task = None
         self._load_state()
-        
-        # Start monitor loop
-        self.monitor_task = asyncio.create_task(self.monitor_jobs())
+
+    def start_monitor(self):
+        """Start the background monitor loop. Must be called inside a running event loop."""
+        if self.monitor_task is None:
+            self.monitor_task = asyncio.create_task(self.monitor_jobs())
 
     def _load_state(self):
         state_path = STATE_DIR / "state.json"

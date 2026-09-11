@@ -127,7 +127,7 @@ class YtDlpSource:
             # max 50 videos
             ydl_opts['playlistend'] = 50
         else:
-            ydl_opts['format'] = self.format_id
+            ydl_opts['format'] = self.format_id or 'bestvideo+bestaudio/best'
             
         if self.embed_subs:
             ydl_opts['writesubtitles'] = True

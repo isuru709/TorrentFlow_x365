@@ -24,6 +24,8 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # Copy application code
 COPY main.py .
 COPY cleanup.py .
+COPY media_routes.py .
+COPY media_engine/ ./media_engine/
 COPY web/ ./web/
 
 # Create necessary directories
@@ -39,5 +41,5 @@ EXPOSE ${PORT} 6881-6889
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
     CMD curl -f http://localhost:${PORT}/health || exit 1
 
-# Run application (auto-update yt-dlp first, then start server)
-CMD pip install -U yt-dlp && uvicorn main:app --host 0.0.0.0 --port $PORT --workers 1
+# Run application (yt-dlp version is managed via requirements.txt at build time)
+CMD uvicorn main:app --host 0.0.0.0 --port $PORT --workers 1
