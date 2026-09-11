@@ -34,7 +34,16 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 
-from media_routes import media_router, media_manager
+try:
+    from media_routes import media_router, media_manager
+    MEDIA_ENGINE_AVAILABLE = True
+except Exception as e:
+    # Set up a basic logger just to print this early warning
+    import logging
+    logging.warning(f"Media engine failed to load: {e}. Media features will be disabled.")
+    media_router = None
+    media_manager = None
+    MEDIA_ENGINE_AVAILABLE = False
 
 # Load environment variables
 load_dotenv()
@@ -1484,7 +1493,7 @@ class TorrentManager:
         
         try:
             torrents_data = [info.model_dump() for info in self.list_torrents()]
-            media_jobs_data = [info.model_dump() for info in media_manager.list_jobs()]
+            media_jobs_data = [info.model_dump() for info in media_manager.list_jobs()] if MEDIA_ENGINE_AVAILABLE else []
             disconnected = []
             
             for client in list(self.websocket_clients):
@@ -1588,7 +1597,7 @@ class TorrentManager:
             try:
                 if self.websocket_clients:
                     torrents_data = [info.model_dump() for info in self.list_torrents()]
-                    media_jobs_data = [info.model_dump() for info in media_manager.list_jobs()]
+                    media_jobs_data = [info.model_dump() for info in media_manager.list_jobs()] if MEDIA_ENGINE_AVAILABLE else []
                     client_count = len(self.websocket_clients)
                     logger.debug(f"Broadcasting progress to {client_count} client(s): {len(torrents_data)} torrent(s), {len(media_jobs_data)} media jobs")
                     
@@ -1623,7 +1632,8 @@ torrent_manager = TorrentManager()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager"""
-    media_manager.websocket_clients = torrent_manager.websocket_clients
+    if MEDIA_ENGINE_AVAILABLE:
+        media_manager.websocket_clients = torrent_manager.websocket_clients
     await torrent_manager.initialize()
     yield
     await torrent_manager.shutdown()
@@ -1644,7 +1654,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(media_router)
+if MEDIA_ENGINE_AVAILABLE:
+    app.include_router(media_router)
 
 # Security headers middleware
 @app.middleware("http")
@@ -1693,11 +1704,11 @@ async def health_check():
     return {
         "status": "healthy",
         "engine": "libtorrent" if LIBTORRENT_AVAILABLE else "unavailable",
-        "media_engine_available": True,
+        "media_engine_available": MEDIA_ENGINE_AVAILABLE,
         "active_torrents": len(torrent_manager.torrents),
         "completed_torrents": len(torrent_manager.completed_torrents),
-        "active_media_jobs": len(media_manager.jobs),
-        "completed_media_jobs": len(media_manager.completed_jobs),
+        "active_media_jobs": len(media_manager.jobs) if MEDIA_ENGINE_AVAILABLE else 0,
+        "completed_media_jobs": len(media_manager.completed_jobs) if MEDIA_ENGINE_AVAILABLE else 0,
         "connected_clients": len(torrent_manager.websocket_clients),
         "dht_enabled": DHT_ENABLED,
         "storage": storage_info
