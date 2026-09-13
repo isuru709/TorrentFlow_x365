@@ -1629,9 +1629,44 @@ torrent_manager = TorrentManager()
 # -----------------------
 # FastAPI App
 # -----------------------
+
+async def _upgrade_ytdlp():
+    """Auto-upgrade yt-dlp and supporting tools to latest on every startup.
+    Mirrors the VB.NET client's yt-dlp -U behavior for the Python package.
+    Ensures dynos always have the latest extractors/fixes after daily restarts.
+    """
+    import subprocess
+    packages = ["yt-dlp", "streamlink", "gallery-dl"]
+    for pkg in packages:
+        try:
+            result = await asyncio.to_thread(
+                subprocess.run,
+                ["pip", "install", "--upgrade", "--quiet", pkg],
+                capture_output=True, text=True, timeout=120
+            )
+            if result.returncode == 0:
+                logger.info(f"✓ {pkg} upgraded successfully")
+            else:
+                logger.warning(f"⚠ {pkg} upgrade returned code {result.returncode}: {result.stderr.strip()}")
+        except Exception as e:
+            logger.warning(f"⚠ Failed to upgrade {pkg}: {e}")
+
+    # Log the installed yt-dlp version for debugging
+    try:
+        import yt_dlp
+        # Force reimport to pick up the new version
+        import importlib
+        importlib.reload(yt_dlp)
+        logger.info(f"yt-dlp version: {yt_dlp.version.__version__}")
+    except Exception:
+        pass
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager"""
+    # Auto-upgrade yt-dlp and supporting tools to latest on every startup
+    await _upgrade_ytdlp()
+
     if MEDIA_ENGINE_AVAILABLE:
         media_manager.websocket_clients = torrent_manager.websocket_clients
         media_manager.start_monitor()

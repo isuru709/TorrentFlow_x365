@@ -8,6 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-libtorrent \
     curl \
     ffmpeg \
+    aria2 \
     && rm -rf /var/lib/apt/lists/*
 
 # Make system-installed libtorrent visible to the container's Python
@@ -20,6 +21,9 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
+
+# Create yt-dlp plugin directory for community plugins
+RUN mkdir -p /root/.yt-dlp/plugins
 
 # Copy application code
 COPY main.py .
@@ -41,5 +45,6 @@ EXPOSE ${PORT} 6881-6889
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
     CMD curl -f http://localhost:${PORT}/health || exit 1
 
-# Run application (yt-dlp version is managed via requirements.txt at build time)
+# Run application (yt-dlp auto-updates to latest at runtime on every startup)
 CMD uvicorn main:app --host 0.0.0.0 --port $PORT --workers 1
+

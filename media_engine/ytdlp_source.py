@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import shutil
 import time
 from pathlib import Path
 from typing import Optional, List, Dict
@@ -10,20 +11,29 @@ from .progress import ProgressHook
 
 logger = logging.getLogger("yt-dlp-source")
 
+# Check if aria2c is available for multi-connection downloads
+ARIA2C_AVAILABLE = shutil.which("aria2c") is not None
+if ARIA2C_AVAILABLE:
+    logger.info("aria2c found — will use as external downloader for faster downloads")
+
+
 class DownloadCancelled(Exception):
     pass
 
 class YtDlpSource:
-    """Wraps yt-dlp's Python API for a single download job or playlist."""
+    """Wraps yt-dlp's Python API for a single download job or playlist.
+    
+    No cookies are used — dynos refresh daily making cookies stale.
+    Uses aria2c as external downloader when available for faster multi-connection downloads.
+    """
 
     def __init__(self, job_id: str, url: str, format_id: str,
-                 save_dir: Path, embed_subs: bool, cookie_path: Optional[Path], is_playlist: bool = False):
+                 save_dir: Path, embed_subs: bool, is_playlist: bool = False):
         self.job_id = job_id
         self.url = url
         self.format_id = format_id
         self.save_dir = save_dir
         self.embed_subs = embed_subs
-        self.cookie_path = cookie_path
         self.is_playlist = is_playlist
         
         self.progress_hook = ProgressHook()
@@ -34,15 +44,32 @@ class YtDlpSource:
         self._error = None
 
     @staticmethod
-    def probe(url: str, cookie_path: Optional[Path] = None) -> ProbeResult:
-        ydl_opts = {
-            'skip_download': True,
-            'extract_flat': 'in_playlist',
+    def _base_opts() -> dict:
+        """Common yt-dlp options for all operations (no cookies, robust defaults)."""
+        opts = {
             'quiet': True,
             'no_warnings': True,
+            # Retry on failures
+            'retries': 10,
+            'fragment_retries': 10,
+            # Use impersonation to bypass anti-bot measures
+            'impersonate': 'chrome',
+            # Don't check certificates (some sites have issues in containers)
+            'nocheckcertificate': True,
+            # Geo bypass
+            'geo_bypass': True,
         }
-        if cookie_path:
-            ydl_opts['cookiefile'] = str(cookie_path)
+        return opts
+
+    @staticmethod
+    def probe(url: str, cookie_path: Optional[Path] = None) -> ProbeResult:
+        ydl_opts = YtDlpSource._base_opts()
+        ydl_opts.update({
+            'skip_download': True,
+            'extract_flat': 'in_playlist',
+        })
+        # cookie_path parameter kept for API compatibility but not used
+        # Dynos restart daily — cookies go stale, downloads work without them
             
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
@@ -112,15 +139,24 @@ class YtDlpSource:
         """Begin download in a background thread."""
         self.save_dir.mkdir(parents=True, exist_ok=True)
         
-        ydl_opts = {
+        ydl_opts = YtDlpSource._base_opts()
+        ydl_opts.update({
             'outtmpl': str(self.save_dir / '%(title)s.%(ext)s'),
             'progress_hooks': [self._progress_callback],
             'quiet': False,
-            'no_warnings': True,
-        }
-        
-        if self.cookie_path:
-            ydl_opts['cookiefile'] = str(self.cookie_path)
+        })
+
+        # Use aria2c as external downloader if available (faster multi-connection downloads)
+        if ARIA2C_AVAILABLE:
+            ydl_opts['external_downloader'] = 'aria2c'
+            ydl_opts['external_downloader_args'] = {
+                'aria2c': [
+                    '--min-split-size=1M',
+                    '--max-connection-per-server=16',
+                    '--split=16',
+                    '--max-concurrent-downloads=4',
+                ]
+            }
             
         if self.is_playlist:
             ydl_opts['format'] = self.format_id or 'bestvideo+bestaudio/best'
