@@ -8,5 +8,6 @@ bencodepy>=0.9.5,<1.0.0
 httpx>=0.26.0,<1.0.0
 websockets>=12.0,<14.0
 yt-dlp
+curl_cffi
 streamlink
 gallery-dl

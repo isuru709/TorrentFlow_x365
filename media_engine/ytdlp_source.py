@@ -16,6 +16,15 @@ ARIA2C_AVAILABLE = shutil.which("aria2c") is not None
 if ARIA2C_AVAILABLE:
     logger.info("aria2c found — will use as external downloader for faster downloads")
 
+# Check if curl_cffi is available for browser impersonation
+try:
+    import curl_cffi
+    IMPERSONATE_AVAILABLE = True
+    logger.info("curl_cffi found — browser impersonation enabled")
+except ImportError:
+    IMPERSONATE_AVAILABLE = False
+    logger.info("curl_cffi not installed — browser impersonation disabled (optional)")
+
 
 class DownloadCancelled(Exception):
     pass
@@ -52,13 +61,14 @@ class YtDlpSource:
             # Retry on failures
             'retries': 10,
             'fragment_retries': 10,
-            # Use impersonation to bypass anti-bot measures
-            'impersonate': 'chrome',
             # Don't check certificates (some sites have issues in containers)
             'nocheckcertificate': True,
             # Geo bypass
             'geo_bypass': True,
         }
+        # Use browser impersonation only if curl_cffi is installed
+        if IMPERSONATE_AVAILABLE:
+            opts['impersonate'] = 'chrome'
         return opts
 
     @staticmethod
