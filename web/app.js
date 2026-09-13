@@ -961,12 +961,19 @@ async function probeMedia() {
         let html = `<h4>${escapeHtml(data.title)}</h4>`;
         if (data.is_playlist) {
             html += `<p style="margin-bottom:10px;">Playlist with ${data.playlist_count} items</p>`;
-            html += `<button class="btn btn-primary" onclick="startMediaDownload('${url}', true)">Download Playlist</button>`;
+            html += `<button class="btn btn-primary" onclick="startMediaDownload('${url}', null, true)">Download Playlist</button>`;
         } else {
+            let options = '';
+            data.formats.slice(-10).forEach(f => {
+                options += `<option value="${f.format_id}" ${f.is_default ? 'selected' : ''}>${f.resolution} (${f.ext})</option>`;
+            });
             html += `
-                <p style="margin-bottom:10px; color:#a0aec0;">Best video and audio will be downloaded and merged automatically.</p>
+                <select id="media-format-select" class="file-picker-select" style="margin: 10px 0;">
+                    ${options}
+                </select>
+                <br>
                 <label style="display:flex; align-items:center; gap:8px; margin-bottom:10px;"><input type="checkbox" id="media-subs-check"> Embed Subtitles</label>
-                <button class="btn btn-primary" onclick="startMediaDownload('${url}', false, document.getElementById('media-subs-check').checked)">Download Media</button>
+                <button class="btn btn-primary" onclick="startMediaDownload('${url}', document.getElementById('media-format-select').value, false, document.getElementById('media-subs-check').checked)">Download Media</button>
             `;
         }
         resultDiv.innerHTML = html;
@@ -978,7 +985,7 @@ async function probeMedia() {
     }
 }
 
-async function startMediaDownload(url, is_playlist, embed_subs = false) {
+async function startMediaDownload(url, format_id, is_playlist, embed_subs = false) {
     const overridePlaylist = document.getElementById('media-playlist-check').checked;
     
     try {
@@ -987,6 +994,7 @@ async function startMediaDownload(url, is_playlist, embed_subs = false) {
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({
                 url, 
+                format_id, 
                 embed_subtitles: embed_subs,
                 is_playlist: overridePlaylist || is_playlist
             })
