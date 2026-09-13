@@ -64,13 +64,6 @@ class YtDlpSource:
                 }
             },
         }
-        # Use browser impersonation if curl_cffi is available
-        # (installed via Dockerfile CMD before Python starts)
-        try:
-            import curl_cffi  # noqa: F401
-            opts['impersonate'] = 'chrome'
-        except ImportError:
-            pass
         return opts
 
     @staticmethod
