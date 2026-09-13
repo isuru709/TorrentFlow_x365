@@ -45,6 +45,10 @@ EXPOSE ${PORT} 6881-6889
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
     CMD curl -f http://localhost:${PORT}/health || exit 1
 
-# Run application (yt-dlp auto-updates to latest at runtime on every startup)
-CMD uvicorn main:app --host 0.0.0.0 --port $PORT --workers 1
+# Auto-upgrade yt-dlp and tools on every startup (before Python imports),
+# then start the application. This ensures dynos always have the latest
+# extractors/fixes after daily restarts — mirrors VB.NET client's yt-dlp -U.
+CMD pip install --upgrade --quiet yt-dlp streamlink gallery-dl curl_cffi 2>/dev/null; \
+    python -c "import yt_dlp; print(f'yt-dlp version: {yt_dlp.version.__version__}')"; \
+    uvicorn main:app --host 0.0.0.0 --port $PORT --workers 1
 

@@ -96,8 +96,11 @@ class MediaManager:
             result = await asyncio.to_thread(YtDlpSource.probe, url)
             return result
         except Exception as e:
-            logger.error(f"Probe failed: {e}")
-            raise HTTPException(status_code=400, detail=str(e))
+            import traceback
+            error_msg = str(e) or f"{type(e).__name__}: (no message)"
+            logger.error(f"Probe failed for {url}: {error_msg}")
+            logger.error(traceback.format_exc())
+            raise HTTPException(status_code=400, detail=error_msg)
 
     async def start_download(self, req: DownloadRequest) -> str:
         job_id = str(uuid.uuid4())
