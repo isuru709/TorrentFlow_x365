@@ -221,6 +221,18 @@ async def get_media_files(job_id: str):
         return media_manager.jobs[job_id].get_media_files()
     raise HTTPException(404, "Job or files not found")
 
+# Resolve MIME type from file extension for HTTP Content-Type headers
+# (media_type field is 'video'/'audio'/None for frontend Play button logic)
+_MIME_TYPES = {
+    '.mp4': 'video/mp4', '.webm': 'video/webm', '.mkv': 'video/x-matroska',
+    '.avi': 'video/x-msvideo', '.mov': 'video/quicktime',
+    '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.ogg': 'audio/ogg',
+    '.flac': 'audio/flac', '.m4a': 'audio/mp4',
+    '.srt': 'text/plain', '.vtt': 'text/vtt', '.ass': 'text/plain',
+}
+def _resolve_mime(path: Path) -> str:
+    return _MIME_TYPES.get(path.suffix.lower(), 'application/octet-stream')
+
 @media_router.get("/{job_id}/download")
 async def download_media(job_id: str, file_index: Optional[int] = None):
     files = []
@@ -254,7 +266,7 @@ async def download_media(job_id: str, file_index: Optional[int] = None):
             return FileResponse(
                 path=abs_path,
                 filename=f["relative_path"],
-                media_type=f.get("media_type", "application/octet-stream")
+                media_type=_resolve_mime(abs_path)
             )
         except StopIteration:
             raise HTTPException(status_code=404, detail="File index not found")
@@ -280,7 +292,7 @@ async def download_media(job_id: str, file_index: Optional[int] = None):
         return FileResponse(
             path=abs_path,
             filename=f["relative_path"],
-            media_type=f.get("media_type", "application/octet-stream")
+            media_type=_resolve_mime(abs_path)
         )
 
 # Helper function to read a file chunk for streaming
@@ -313,7 +325,7 @@ async def stream_media(request: Request, job_id: str, file_index: int):
         raise HTTPException(status_code=404, detail="File not found on disk")
 
     file_size = f["size"]
-    media_type = f.get("media_type", "video/mp4")
+    media_type = _resolve_mime(abs_path)
     
     range_header = request.headers.get("Range")
     if not range_header:

@@ -245,12 +245,24 @@ class YtDlpSource:
         idx = 0
         for p in self.save_dir.rglob('*'):
             if p.is_file():
+                # Classify media_type the same way as torrent files in main.py
+                # so the frontend Play button works consistently
+                ext = p.suffix.lower()
+                if ext in ('.mp4', '.mkv', '.avi', '.webm', '.mov'):
+                    media_type = 'video'
+                elif ext in ('.mp3', '.flac', '.wav', '.m4a', '.ogg'):
+                    media_type = 'audio'
+                elif ext in ('.srt', '.vtt', '.ass'):
+                    media_type = 'subtitle'
+                else:
+                    media_type = None
+
                 self._completed_files.append({
                     "index": idx,
                     "relative_path": p.name,
                     "absolute_path": str(p.absolute()),
                     "size": p.stat().st_size,
-                    "media_type": "video/mp4" if p.suffix == '.mp4' else "application/octet-stream"
+                    "media_type": media_type
                 })
                 idx += 1
 
