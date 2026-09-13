@@ -49,12 +49,11 @@ class YtDlpSource:
         except Exception:
             return False
 
-    def __init__(self, job_id: str, url: str, format_id: str,
+    def __init__(self, job_id: str, url: str,
                  save_dir: Path, embed_subs: bool,
                  cookie_path: Optional[Path] = None, is_playlist: bool = False):
         self.job_id = job_id
         self.url = url
-        self.format_id = format_id
         self.save_dir = save_dir
         self.embed_subs = embed_subs
         self.cookie_path = cookie_path
@@ -196,12 +195,12 @@ class YtDlpSource:
                 ]
             }
             
+        ydl_opts['format'] = 'bestvideo+bestaudio/best'
+        ydl_opts['merge_output_format'] = 'mp4'
+            
         if self.is_playlist:
-            ydl_opts['format'] = self.format_id or 'bestvideo+bestaudio/best'
             # max 50 videos
             ydl_opts['playlistend'] = 50
-        else:
-            ydl_opts['format'] = self.format_id or 'bestvideo+bestaudio/best'
             
         if self.embed_subs:
             ydl_opts['writesubtitles'] = True
@@ -222,8 +221,26 @@ class YtDlpSource:
 
         def _run():
             try:
+                import subprocess
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     self._metadata = ydl.extract_info(self.url, download=True)
+                    
+                    # Verify audio streams with ffprobe
+                    for p in self.save_dir.rglob('*.mp4'):
+                        if p.is_file():
+                            try:
+                                result = subprocess.run(
+                                    ['ffprobe', '-v', 'error', '-show_streams', '-select_streams', 'a', str(p)],
+                                    stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE,
+                                    text=True,
+                                    timeout=10
+                                )
+                                if not result.stdout.strip():
+                                    raise Exception(f"Merged MP4 {p.name} contains no audio stream.")
+                            except subprocess.TimeoutExpired:
+                                pass # Skip if ffprobe hangs
+                                
                     self.progress_hook.status = "completed"
             except DownloadCancelled:
                 self.progress_hook.status = "cancelled"

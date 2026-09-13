@@ -29,7 +29,6 @@ class ProbeRequest(BaseModel):
 
 class DownloadRequest(BaseModel):
     url: str
-    format_id: Optional[str] = None
     embed_subtitles: bool = False
     is_playlist: bool = False
 
@@ -113,7 +112,6 @@ class MediaManager:
         source = YtDlpSource(
             job_id=job_id,
             url=req.url,
-            format_id=req.format_id or ('bestvideo+bestaudio/best' if not req.is_playlist else None),
             save_dir=save_dir,
             embed_subs=req.embed_subtitles,
             cookie_path=cookie_path,
