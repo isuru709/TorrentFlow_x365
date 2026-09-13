@@ -56,7 +56,21 @@ class YtDlpSource:
             'nocheckcertificate': True,
             # Geo bypass
             'geo_bypass': True,
+            # Use iOS/mweb player clients for YouTube to bypass
+            # "Sign in to confirm you're not a bot" on server IPs
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['ios,mweb'],
+                }
+            },
         }
+        # Use browser impersonation if curl_cffi is available
+        # (installed via Dockerfile CMD before Python starts)
+        try:
+            import curl_cffi  # noqa: F401
+            opts['impersonate'] = 'chrome'
+        except ImportError:
+            pass
         return opts
 
     @staticmethod
