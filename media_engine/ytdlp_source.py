@@ -4,6 +4,7 @@ import shutil
 import time
 from pathlib import Path
 from typing import Optional, List, Dict
+from urllib.parse import urlparse
 import yt_dlp
 
 from .models import MediaJob, ProbeResult, FormatInfo
@@ -23,17 +24,40 @@ class DownloadCancelled(Exception):
 class YtDlpSource:
     """Wraps yt-dlp's Python API for a single download job or playlist.
     
-    No cookies are used — dynos refresh daily making cookies stale.
+    Cookie strategy:
+    - YouTube: NO cookies (dynos refresh daily, stale cookies cause errors).
+              Uses iOS/mweb player_client to bypass bot detection instead.
+    - Other sites (Instagram, Twitter, etc.): USE cookies if available,
+              these sites require authentication for most content.
+    
     Uses aria2c as external downloader when available for faster multi-connection downloads.
     """
 
+    # YouTube domains — these get NO cookies + player_client bypass
+    _YOUTUBE_DOMAINS = frozenset({
+        'youtube.com', 'youtu.be', 'm.youtube.com',
+        'music.youtube.com', 'youtube-nocookie.com',
+    })
+
+    @staticmethod
+    def _is_youtube(url: str) -> bool:
+        """Check if URL is a YouTube domain."""
+        try:
+            hostname = urlparse(url).hostname or ""
+            hostname = hostname.lower().removeprefix("www.")
+            return hostname in YtDlpSource._YOUTUBE_DOMAINS
+        except Exception:
+            return False
+
     def __init__(self, job_id: str, url: str, format_id: str,
-                 save_dir: Path, embed_subs: bool, is_playlist: bool = False):
+                 save_dir: Path, embed_subs: bool,
+                 cookie_path: Optional[Path] = None, is_playlist: bool = False):
         self.job_id = job_id
         self.url = url
         self.format_id = format_id
         self.save_dir = save_dir
         self.embed_subs = embed_subs
+        self.cookie_path = cookie_path
         self.is_playlist = is_playlist
         
         self.progress_hook = ProgressHook()
@@ -45,7 +69,7 @@ class YtDlpSource:
 
     @staticmethod
     def _base_opts() -> dict:
-        """Common yt-dlp options for all operations (no cookies, robust defaults)."""
+        """Common yt-dlp options for all operations (robust defaults)."""
         opts = {
             'quiet': True,
             'no_warnings': True,
@@ -58,6 +82,7 @@ class YtDlpSource:
             'geo_bypass': True,
             # Use iOS/mweb player clients for YouTube to bypass
             # "Sign in to confirm you're not a bot" on server IPs
+            # (non-YouTube extractors ignore this)
             'extractor_args': {
                 'youtube': {
                     'player_client': ['ios,mweb'],
@@ -73,8 +98,11 @@ class YtDlpSource:
             'skip_download': True,
             'extract_flat': 'in_playlist',
         })
-        # cookie_path parameter kept for API compatibility but not used
-        # Dynos restart daily — cookies go stale, downloads work without them
+
+        # Use cookies for non-YouTube sites (Instagram, Twitter, etc. need auth)
+        # YouTube: skip cookies — dynos refresh daily, use player_client bypass instead
+        if cookie_path and not YtDlpSource._is_youtube(url):
+            ydl_opts['cookiefile'] = str(cookie_path)
             
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
@@ -150,6 +178,11 @@ class YtDlpSource:
             'progress_hooks': [self._progress_callback],
             'quiet': False,
         })
+
+        # Use cookies for non-YouTube sites (Instagram, Twitter, etc. need auth)
+        # YouTube: skip cookies — dynos refresh daily, use player_client bypass instead
+        if self.cookie_path and not self._is_youtube(self.url):
+            ydl_opts['cookiefile'] = str(self.cookie_path)
 
         # Use aria2c as external downloader if available (faster multi-connection downloads)
         if ARIA2C_AVAILABLE:

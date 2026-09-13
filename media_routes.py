@@ -15,6 +15,7 @@ from pydantic import BaseModel
 
 from media_engine.models import MediaJob, ProbeResult
 from media_engine.ytdlp_source import YtDlpSource
+from media_engine.cookie_manager import CookieManager
 
 logger = logging.getLogger("media-engine")
 media_router = APIRouter(prefix="/api/media", tags=["media"])
@@ -91,9 +92,11 @@ class MediaManager:
             logger.error(f"Failed to save media state: {e}")
 
     async def probe(self, url: str) -> ProbeResult:
+        cookie_path = CookieManager.get_cookie_path()
         try:
-            # Run blocking probe in thread (no cookies — dynos refresh daily)
-            result = await asyncio.to_thread(YtDlpSource.probe, url)
+            # Run blocking probe in thread
+            # Cookies used for non-YouTube sites; YouTube uses player_client bypass
+            result = await asyncio.to_thread(YtDlpSource.probe, url, cookie_path)
             return result
         except Exception as e:
             import traceback
@@ -105,6 +108,7 @@ class MediaManager:
     async def start_download(self, req: DownloadRequest) -> str:
         job_id = str(uuid.uuid4())
         save_dir = DOWNLOAD_DIR / job_id
+        cookie_path = CookieManager.get_cookie_path()
         
         source = YtDlpSource(
             job_id=job_id,
@@ -112,6 +116,7 @@ class MediaManager:
             format_id=req.format_id or ('bestvideo+bestaudio/best' if not req.is_playlist else None),
             save_dir=save_dir,
             embed_subs=req.embed_subtitles,
+            cookie_path=cookie_path,
             is_playlist=req.is_playlist
         )
         self.jobs[job_id] = source
