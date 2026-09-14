@@ -937,56 +937,24 @@ async function pasteMediaUrl() {
     }
 }
 
-async function probeMedia() {
+async function directMediaDownload() {
     const url = document.getElementById('media-url-input').value.trim();
     if (!url) return showNotification('Please enter a URL', 'error');
     
-    const btn = document.getElementById('probe-btn');
-    btn.disabled = true;
-    btn.innerHTML = '<span class="btn-icon">⏳</span> Probing...';
+    const btn = document.getElementById('download-media-btn');
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '<span class="btn-icon">⏳</span> Starting...';
+    }
     
     try {
-        const res = await fetch(`${API_BASE}/api/media/probe`, {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({url})
-        });
-        const data = await res.json();
-        
-        if (!res.ok) throw new Error(data.detail || 'Probe failed');
-        
-        const resultDiv = document.getElementById('media-probe-result');
-        resultDiv.style.display = 'block';
-        
-        let html = `<h4>${escapeHtml(data.title)}</h4>`;
-        if (data.is_playlist) {
-            html += `<p style="margin-bottom:10px;">Playlist with ${data.playlist_count} items</p>`;
-            html += `<button class="btn btn-primary" onclick="startMediaDownload('${url}', null, true)">Download Playlist</button>`;
-        } else {
-            let options = '';
-            data.formats.slice(-10).forEach(f => {
-                let fmt = f.format_id;
-                // If it's a video-only format, append +bestaudio to fix the "no sound" issue
-                if (f.vcodec !== 'none' && f.acodec === 'none') {
-                    fmt = `${f.format_id}+bestaudio/${f.format_id}/best`;
-                }
-                options += `<option value="${fmt}" ${f.is_default ? 'selected' : ''}>${f.resolution} (${f.ext})</option>`;
-            });
-            html += `
-                <select id="media-format-select" class="file-picker-select" style="margin: 10px 0;">
-                    ${options}
-                </select>
-                <br>
-                <label style="display:flex; align-items:center; gap:8px; margin-bottom:10px;"><input type="checkbox" id="media-subs-check"> Embed Subtitles</label>
-                <button class="btn btn-primary" onclick="startMediaDownload('${url}', document.getElementById('media-format-select').value, false, document.getElementById('media-subs-check').checked)">Download Media</button>
-            `;
-        }
-        resultDiv.innerHTML = html;
-    } catch (e) {
-        showNotification(`Error: ${e.message}`, 'error');
+        const isPlaylist = document.getElementById('media-playlist-check').checked;
+        await startMediaDownload(url, null, isPlaylist, false);
     } finally {
-        btn.disabled = false;
-        btn.innerHTML = '<span class="btn-icon">🔍</span> Probe';
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = '<span class="btn-icon">⬇</span> Download';
+        }
     }
 }
 

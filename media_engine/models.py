@@ -40,7 +40,7 @@ class FormatInfo(BaseModel):
 
 class ProbeResult(BaseModel):
     title: str
-    duration: Optional[int]       # seconds
+    duration: Optional[float]     # seconds
     thumbnail: Optional[str]
     uploader: str
     formats: List[FormatInfo]
