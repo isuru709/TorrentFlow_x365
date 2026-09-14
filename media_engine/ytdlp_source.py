@@ -73,6 +73,8 @@ class YtDlpSource:
         opts = {
             'quiet': True,
             'no_warnings': True,
+            'restrictfilenames': True,  # Matches old rename_handler logic natively
+            'concurrent_fragment_downloads': 16, # Helps bypass rate limits and speeds up download
             # Retry on failures
             'retries': 10,
             'fragment_retries': 10,

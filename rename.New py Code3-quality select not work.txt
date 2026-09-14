@@ -1,0 +1,687 @@
+import os
+import re
+import glob
+import uuid
+import time
+import threading
+import logging
+import subprocess
+from typing import Optional, Literal
+from pathlib import Path
+
+from fastapi import FastAPI, BackgroundTasks, HTTPException, Request
+from fastapi.responses import JSONResponse, FileResponse
+from pydantic import BaseModel
+import yt_dlp
+
+# Import the rename handler
+from rename_handler import auto_rename_file, sanitize_filename
+
+# -----------------------
+# Config & Logging
+# -----------------------
+logging.basicConfig(level=logging.INFO,
+                    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger('download-api')
+
+DOWNLOAD_DIR = os.environ.get("YTDLP_DOWNLOAD_DIR", "/srv/ytdlp/downloads")
+BASE_URL = os.environ.get("YTDLP_BASE_URL", "http://34.143.135.158")
+COOKIE_FILE = os.environ.get("YTDLP_COOKIE_FILE", "/srv/ytdlp/app/cookies.txt")
+TEMP_COOKIES_DIR = os.path.join(DOWNLOAD_DIR, ".temp_cookies")
+
+os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+os.makedirs(TEMP_COOKIES_DIR, exist_ok=True)
+
+jobs = {}
+jobs_lock = threading.Lock()
+
+# -----------------------
+# Models & Exceptions
+# -----------------------
+class DownloadRequest(BaseModel):
+    url: str
+    kind: Literal["video", "audio"] = "video"
+    max_height: Optional[int] = None
+    audio_bitrate: Optional[int] = 192
+    filename_template: Optional[str] = "%(title).200B.%(ext)s"
+    custom_cookies: Optional[str] = None
+
+class DownloadError(Exception):
+    def __init__(self, message, error_type=None, details=None):
+        self.message = message
+        self.error_type = error_type
+        self.details = details
+        super().__init__(self.message)
+
+# -----------------------
+# Helpers
+# -----------------------
+def is_youtube_url(url: str) -> bool:
+    return "youtube.com" in url or "youtu.be" in url
+
+def extract_video_id(url: str) -> Optional[str]:
+    youtube_patterns = [
+        r'(?:v=|\/videos\/|embed\/|youtu.be\/|\/v\/|\/e\/|watch\?v=|&v=)([^#\&\?\n]{11})',
+        r'(?:youtube\.com\/shorts\/)([^#\&\?\/\n]{11})'
+    ]
+    for pattern in youtube_patterns:
+        match = re.search(pattern, url)
+        if match:
+            return match.group(1)
+    return None
+
+def build_video_format(max_height: Optional[int]) -> str:
+    """
+    Build format string with fallback options
+    """
+    if max_height:
+        # Try exact height, then lower, then any video+audio, then best
+        return f"bestvideo[height<={max_height}]+bestaudio/bestvideo[height<={max_height}]/best[height<={max_height}]/bestvideo+bestaudio/best"
+    # For highest quality: try separate streams first, then combined
+    return "bestvideo+bestaudio/bestvideo*+bestaudio*/best"
+
+def build_audio_format() -> str:
+    return "bestaudio/best"
+
+def find_most_recent(pattern: str) -> Optional[str]:
+    c = glob.glob(pattern)
+    if not c:
+        return None
+    c.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+    return c[0]
+
+def clean_existing_files_for_vid(vid: str):
+    if not vid:
+        return
+    for p in glob.glob(os.path.join(DOWNLOAD_DIR, f"*{vid}*")):
+        try:
+            os.remove(p)
+        except Exception:
+            pass
+
+def validate_netscape_cookies(cookies_text: str) -> bool:
+    """Validate that the cookies text looks like Netscape format"""
+    if not cookies_text or not cookies_text.strip():
+        return False
+    
+    lines = cookies_text.strip().split('\n')
+    valid_lines = 0
+    
+    for line in lines:
+        line = line.strip()
+        # Skip empty lines and comments
+        if not line or line.startswith('#'):
+            continue
+        
+        # Netscape format has fields separated by tabs
+        fields = line.split('\t')
+        if len(fields) >= 6:  # At least 6 fields
+            valid_lines += 1
+    
+    return valid_lines > 0
+
+def save_temp_cookies(cookies_text: str, job_id: str) -> Optional[str]:
+    """Save user-provided cookies to a temporary file"""
+    try:
+        if not cookies_text or not cookies_text.strip():
+            logger.warning(f"Job {job_id}: Empty cookies provided")
+            return None
+        
+        # Clean up the cookies text
+        cookies_text = cookies_text.strip()
+        
+        # Validate format
+        if not validate_netscape_cookies(cookies_text):
+            logger.error(f"Job {job_id}: Invalid Netscape cookie format")
+            return None
+        
+        # Ensure it has the Netscape header if missing
+        if not cookies_text.startswith('# Netscape HTTP Cookie File'):
+            cookies_text = '# Netscape HTTP Cookie File\n' + cookies_text
+        
+        temp_cookie_file = os.path.join(TEMP_COOKIES_DIR, f"cookies_{job_id}.txt")
+        
+        # Write with proper encoding
+        with open(temp_cookie_file, 'w', encoding='utf-8', newline='\n') as f:
+            f.write(cookies_text)
+        
+        # Verify file was created
+        if not os.path.exists(temp_cookie_file):
+            logger.error(f"Job {job_id}: Failed to create cookie file")
+            return None
+        
+        file_size = os.path.getsize(temp_cookie_file)
+        logger.info(f"Job {job_id}: Saved temporary cookies ({file_size} bytes)")
+        
+        return temp_cookie_file
+        
+    except Exception as e:
+        logger.exception(f"Job {job_id}: Failed to save temporary cookies: {e}")
+        return None
+
+def cleanup_temp_cookies(cookie_file: str):
+    """Remove temporary cookie file"""
+    try:
+        if cookie_file and os.path.exists(cookie_file):
+            os.remove(cookie_file)
+            logger.info(f"Cleaned up temporary cookie file: {cookie_file}")
+    except Exception as e:
+        logger.exception(f"Failed to cleanup temp cookies: {e}")
+
+def ffmpeg_extract_mp3(input_path: str, output_path: str, bitrate_k: int = 192) -> bool:
+    try:
+        if not os.path.exists(input_path):
+            logger.error(f"ffmpeg_extract_mp3: input file missing: {input_path}")
+            return False
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", input_path,
+            "-vn",
+            "-c:a", "libmp3lame",
+            "-b:a", f"{bitrate_k}k",
+            output_path
+        ]
+        p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if p.returncode != 0:
+            logger.error(f"ffmpeg (mp3) failed: {p.stderr.decode(errors='ignore')}")
+            return False
+        return os.path.exists(output_path)
+    except Exception as e:
+        logger.exception(f"ffmpeg_extract_mp3 exception: {e}")
+        return False
+
+def mux_video_and_audio(video_path: str, audio_path: str, final_path: str, audio_bitrate_k: int = 192) -> bool:
+    try:
+        if not os.path.exists(video_path) or not os.path.exists(audio_path):
+            logger.error(f"Cannot mux: missing files. video={video_path}, audio={audio_path}")
+            return False
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", video_path,
+            "-i", audio_path,
+            "-c:v", "copy",
+            "-c:a", "aac",
+            "-b:a", f"{audio_bitrate_k}k",
+            final_path
+        ]
+        p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if p.returncode != 0:
+            logger.error(f"ffmpeg mux failed: {p.stderr.decode(errors='ignore')}")
+            return False
+        return os.path.exists(final_path)
+    except Exception as e:
+        logger.exception(f"mux_video_and_audio exception: {e}")
+        return False
+
+def is_auth_error(error_msg: str) -> bool:
+    """Check if error is related to authentication/cookies/sign-in"""
+    auth_keywords = [
+        "sign in", "signin", "login", "authentication",
+        "private video", "members-only", "age-restricted", 
+        "confirm your age", "video unavailable",
+        "this video is not available", "this video is private",
+        "join this channel", "membership", "available to members"
+    ]
+    error_lower = error_msg.lower()
+    return any(keyword in error_lower for keyword in auth_keywords)
+
+def is_format_error(error_msg: str) -> bool:
+    """Check if error is about format availability (not authentication)"""
+    format_keywords = [
+        "requested format is not available",
+        "no video formats found",
+        "format not available",
+        "--list-formats"
+    ]
+    error_lower = error_msg.lower()
+    return any(keyword in error_lower for keyword in format_keywords)
+
+# -----------------------
+# Main download worker
+# -----------------------
+def run_download(job_id: str, req: DownloadRequest):
+    temp_cookie_file = None
+    
+    try:
+        with jobs_lock:
+            jobs[job_id]["status"] = "downloading"
+
+        url = req.url
+        youtube = is_youtube_url(url)
+        vid_candidate = extract_video_id(url) if youtube else str(uuid.uuid4())
+        vid = vid_candidate
+        clean_existing_files_for_vid(vid)
+
+        # Save custom cookies if provided
+        if req.custom_cookies:
+            logger.info(f"Job {job_id}: Custom cookies provided, attempting to save...")
+            temp_cookie_file = save_temp_cookies(req.custom_cookies, job_id)
+            if temp_cookie_file:
+                logger.info(f"Job {job_id}: Successfully saved custom cookies")
+            else:
+                logger.warning(f"Job {job_id}: Failed to save custom cookies")
+
+        def hook(d):
+            if d.get("status") == "downloading":
+                total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
+                downloaded = d.get("downloaded_bytes") or 0
+                prog = float(downloaded) / total * 100 if total else 0.0
+                with jobs_lock:
+                    jobs[job_id]["progress"] = round(prog, 2)
+
+        # Determine which cookie file to use
+        cookies_option = None
+        cookie_source = "none"
+        
+        if temp_cookie_file and os.path.exists(temp_cookie_file):
+            cookies_option = temp_cookie_file
+            cookie_source = "custom"
+            logger.info(f"Job {job_id}: Using CUSTOM cookies")
+        elif COOKIE_FILE and os.path.exists(COOKIE_FILE):
+            cookies_option = COOKIE_FILE
+            cookie_source = "server"
+            logger.info(f"Job {job_id}: Using SERVER cookies")
+        else:
+            logger.info(f"Job {job_id}: NO cookies available")
+
+        # Base download options
+        def get_base_opts(use_cookies=True, cookie_file=None):
+            opts = {
+                "restrictfilenames": True,
+                "noplaylist": True,
+                "progress_hooks": [hook],
+                "concurrent_fragment_downloads": 16,
+                "ignoreerrors": False,
+                "no_warnings": False,
+            }
+            if use_cookies and cookie_file and os.path.exists(cookie_file):
+                opts["cookiefile"] = cookie_file
+                logger.info(f"Job {job_id}: yt-dlp will use cookie file: {cookie_file}")
+            return opts
+
+        def attempt_download(use_cookies=True, cookie_file=None):
+            """
+            Attempt download with or without cookies.
+            Returns (success: bool, result_data: dict or None, error_message: str or None)
+            """
+            try:
+                base_opts = get_base_opts(use_cookies, cookie_file)
+                cookie_desc = f"WITH cookies ({os.path.basename(cookie_file) if cookie_file else 'none'})" if use_cookies and cookie_file else "WITHOUT cookies"
+                logger.info(f"Job {job_id}: Attempting download {cookie_desc}")
+
+                # -----------------------
+                # AUDIO REQUEST
+                # -----------------------
+                if req.kind == "audio":
+                    if youtube:
+                        audio_outtmpl = os.path.join(DOWNLOAD_DIR, f"%(title).200B-{vid}.%(ext)s")
+                        ydl_audio_opts = {
+                            **base_opts,
+                            "outtmpl": audio_outtmpl,
+                            "format": build_audio_format(),
+                            "postprocessors": [{
+                                "key": "FFmpegExtractAudio",
+                                "preferredcodec": "mp3",
+                                "preferredquality": str(req.audio_bitrate)
+                            }],
+                        }
+                        with yt_dlp.YoutubeDL(ydl_audio_opts) as ydl:
+                            info = ydl.extract_info(url, download=True)
+                            fp = ydl.prepare_filename(info)
+                            mp3_path = os.path.splitext(fp)[0] + ".mp3"
+                            if not os.path.exists(mp3_path):
+                                mp3_path = find_most_recent(os.path.join(DOWNLOAD_DIR, f"*{vid}*.mp3"))
+                            if not mp3_path:
+                                return False, None, "Audio extraction failed (YouTube)."
+                            
+                            # AUTO-RENAME
+                            renamed_path = auto_rename_file(mp3_path)
+                            if renamed_path:
+                                mp3_path = renamed_path
+                            
+                            file_name = os.path.basename(mp3_path)
+                            link = f"{BASE_URL}/dl/{file_name}"
+                            return True, {"link": link, "file_name": file_name}, None
+
+                    # Non-YouTube: download best then convert
+                    outtmpl = os.path.join(DOWNLOAD_DIR, f"%(title).200B-{vid}.%(ext)s")
+                    ydl_opts = {
+                        **base_opts,
+                        "outtmpl": outtmpl,
+                        "format": "best",
+                    }
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        info = ydl.extract_info(url, download=True)
+                        downloaded_path = ydl.prepare_filename(info)
+                        if not os.path.exists(downloaded_path):
+                            downloaded_path = find_most_recent(os.path.join(DOWNLOAD_DIR, f"*{vid}*"))
+                        if not downloaded_path:
+                            return False, None, "Downloaded source file not found for audio conversion."
+                    mp3_path = os.path.splitext(downloaded_path)[0] + ".mp3"
+                    ok = ffmpeg_extract_mp3(downloaded_path, mp3_path, bitrate_k=req.audio_bitrate or 192)
+                    if not ok or not os.path.exists(mp3_path):
+                        return False, None, "ffmpeg audio extraction failed"
+                    try: os.remove(downloaded_path)
+                    except Exception: pass
+                    
+                    # AUTO-RENAME
+                    renamed_path = auto_rename_file(mp3_path)
+                    if renamed_path:
+                        mp3_path = renamed_path
+                    
+                    file_name = os.path.basename(mp3_path)
+                    link = f"{BASE_URL}/dl/{file_name}"
+                    return True, {"link": link, "file_name": file_name}, None
+
+                # -----------------------
+                # VIDEO REQUEST
+                # -----------------------
+                if youtube:
+                    # Extract info and compute final filename
+                    ydl_info_opts = {"quiet": False, "no_warnings": False, "skip_download": True, "noplaylist": True}
+                    if use_cookies and cookie_file and os.path.exists(cookie_file):
+                        ydl_info_opts["cookiefile"] = cookie_file
+                    
+                    with yt_dlp.YoutubeDL(ydl_info_opts) as ydl_info:
+                        info = ydl_info.extract_info(url, download=False)
+                        video_id = info.get("id") or vid
+                        if not video_id:
+                            return False, None, "Cannot determine video ID"
+                        
+                        tmp_opts = {"outtmpl": req.filename_template, "restrictfilenames": False, "noplaylist": True}
+                        with yt_dlp.YoutubeDL(tmp_opts) as ytmp:
+                            prepared = ytmp.prepare_filename(info)
+                        final_basename = os.path.basename(os.path.splitext(prepared)[0] + ".mp4")
+                        final_path = os.path.join(DOWNLOAD_DIR, final_basename)
+
+                    clean_existing_files_for_vid(video_id)
+
+                    # Download video stream with fallback format
+                    video_format = build_video_format(req.max_height)
+                    logger.info(f"Job {job_id}: Using video format: {video_format}")
+                    
+                    video_outtmpl = os.path.join(DOWNLOAD_DIR, f"%(title).200B-{video_id}.video.%(ext)s")
+                    ydl_video_opts = {
+                        **base_opts,
+                        "outtmpl": video_outtmpl,
+                        "format": video_format,
+                    }
+                    with yt_dlp.YoutubeDL(ydl_video_opts) as ydl_video:
+                        ydl_video.download([url])
+                    video_path = find_most_recent(os.path.join(DOWNLOAD_DIR, f"*{video_id}.video.*"))
+                    if not video_path:
+                        return False, None, "Video stream download failed"
+
+                    # Download audio stream with fallback
+                    audio_outtmpl = os.path.join(DOWNLOAD_DIR, f"%(title).200B-{video_id}.audio.%(ext)s")
+                    ydl_audio_opts = {
+                        **base_opts,
+                        "outtmpl": audio_outtmpl,
+                        "format": build_audio_format(),
+                    }
+                    with yt_dlp.YoutubeDL(ydl_audio_opts) as ydl_audio:
+                        ydl_audio.download([url])
+                    audio_path = find_most_recent(os.path.join(DOWNLOAD_DIR, f"*{video_id}.audio.*"))
+                    if not audio_path:
+                        return False, None, "Audio stream download failed"
+
+                    # Mux
+                    tmp_mux_path = os.path.join(DOWNLOAD_DIR, f"{video_id}_mux_temp.mp4")
+                    ok = mux_video_and_audio(video_path, audio_path, tmp_mux_path, audio_bitrate_k=req.audio_bitrate or 192)
+                    if not ok or not os.path.exists(tmp_mux_path):
+                        return False, None, "Muxing failed"
+
+                    # Move to final path
+                    try:
+                        if os.path.exists(final_path):
+                            os.remove(final_path)
+                        os.replace(tmp_mux_path, final_path)
+                    except Exception:
+                        import shutil
+                        shutil.copy2(tmp_mux_path, final_path)
+                        os.remove(tmp_mux_path)
+
+                    # Cleanup temp files
+                    for p in glob.glob(os.path.join(DOWNLOAD_DIR, f"*{video_id}.video.*")) + glob.glob(os.path.join(DOWNLOAD_DIR, f"*{video_id}.audio.*")):
+                        try:
+                            os.remove(p)
+                        except Exception:
+                            pass
+
+                    # AUTO-RENAME
+                    renamed_path = auto_rename_file(final_path)
+                    if renamed_path:
+                        final_path = renamed_path
+
+                    file_name = os.path.basename(final_path)
+                    link = f"{BASE_URL}/dl/{file_name}"
+                    return True, {"link": link, "file_name": file_name}, None
+
+                # Non-YouTube video
+                outtmpl = os.path.join(DOWNLOAD_DIR, f"%(title).200B-{vid}.%(ext)s")
+                ydl_opts = {
+                    **base_opts,
+                    "outtmpl": outtmpl,
+                    "format": "best",
+                }
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(url, download=True)
+                    file_path = ydl.prepare_filename(info)
+                    if not os.path.exists(file_path):
+                        file_path = find_most_recent(os.path.join(DOWNLOAD_DIR, f"*{vid}*"))
+                    if not file_path:
+                        return False, None, "Downloaded file not found"
+                    
+                    # AUTO-RENAME
+                    renamed_path = auto_rename_file(file_path)
+                    if renamed_path:
+                        file_path = renamed_path
+                    
+                    file_name = os.path.basename(file_path)
+                    link = f"{BASE_URL}/dl/{file_name}"
+                    return True, {"link": link, "file_name": file_name}, None
+
+            except yt_dlp.utils.DownloadError as e:
+                error_msg = str(e)
+                logger.error(f"Job {job_id}: yt-dlp DownloadError: {error_msg}")
+                return False, None, error_msg
+            except Exception as e:
+                error_msg = str(e)
+                logger.exception(f"Job {job_id}: Unexpected error: {error_msg}")
+                return False, None, error_msg
+
+        # -----------------------
+        # Download logic with fallback
+        # -----------------------
+        try:
+            # If custom cookies provided, try them FIRST
+            if temp_cookie_file and os.path.exists(temp_cookie_file):
+                logger.info(f"Job {job_id}: Attempting with CUSTOM cookies first")
+                success, result, error = attempt_download(use_cookies=True, cookie_file=temp_cookie_file)
+                
+                if success:
+                    logger.info(f"Job {job_id}: SUCCESS with custom cookies")
+                    with jobs_lock:
+                        jobs[job_id].update({
+                            "status": "finished",
+                            "link": result["link"],
+                            "file_name": result["file_name"],
+                            "progress": 100.0,
+                            "message": "Downloaded successfully with your custom cookies ✓"
+                        })
+                    return
+                else:
+                    logger.warning(f"Job {job_id}: FAILED with custom cookies: {error}")
+                    
+                    # Check if it's a format error (cookies work, but format issue)
+                    if error and is_format_error(error):
+                        raise DownloadError(
+                            f"Your cookies are valid, but the requested quality is not available for this video. Try selecting a different quality or 'Highest Available'. Error: {error}",
+                            "format_not_available",
+                            {"error": error}
+                        )
+                    
+                    # Authentication error even with custom cookies
+                    raise DownloadError(
+                        f"Download failed with your custom cookies. Your cookies may be expired or invalid. Please get fresh cookies and try again. Error: {error}",
+                        "custom_cookies_failed",
+                        {"error": error}
+                    )
+            
+            # Try with server cookies if available
+            if cookies_option and cookie_source == "server":
+                logger.info(f"Job {job_id}: Attempting with SERVER cookies")
+                success, result, error = attempt_download(use_cookies=True, cookie_file=cookies_option)
+                
+                if success:
+                    logger.info(f"Job {job_id}: SUCCESS with server cookies")
+                    with jobs_lock:
+                        jobs[job_id].update({
+                            "status": "finished",
+                            "link": result["link"],
+                            "file_name": result["file_name"],
+                            "progress": 100.0
+                        })
+                    return
+                
+                # Check if it's an auth error
+                if error and is_auth_error(error):
+                    logger.warning(f"Job {job_id}: Auth error with server cookies, trying without cookies")
+                    with jobs_lock:
+                        jobs[job_id]["message"] = "Server cookies expired, retrying without authentication..."
+                    
+                    clean_existing_files_for_vid(vid)
+                    
+                    # Try without cookies
+                    success, result, error = attempt_download(use_cookies=False, cookie_file=None)
+                    if success:
+                        logger.info(f"Job {job_id}: SUCCESS without cookies")
+                        with jobs_lock:
+                            jobs[job_id].update({
+                                "status": "finished",
+                                "link": result["link"],
+                                "file_name": result["file_name"],
+                                "progress": 100.0,
+                                "message": "Downloaded without authentication"
+                            })
+                        return
+                    else:
+                        raise DownloadError(
+                            f"Cannot download this video. Please provide valid cookies using the 'Custom Cookies' section if you have access.",
+                            "authentication_required"
+                        )
+                else:
+                    raise DownloadError(error or "Download failed with server cookies", "download_error")
+            
+            # No cookies available, try without
+            if not cookies_option:
+                logger.info(f"Job {job_id}: Attempting WITHOUT cookies")
+                success, result, error = attempt_download(use_cookies=False, cookie_file=None)
+                
+                if success:
+                    logger.info(f"Job {job_id}: SUCCESS without cookies")
+                    with jobs_lock:
+                        jobs[job_id].update({
+                            "status": "finished",
+                            "link": result["link"],
+                            "file_name": result["file_name"],
+                            "progress": 100.0
+                        })
+                    return
+                else:
+                    if error and is_auth_error(error):
+                        raise DownloadError(
+                            f"This video requires authentication. Please provide cookies using the 'Custom Cookies' section.",
+                            "authentication_required"
+                        )
+                    else:
+                        raise DownloadError(error or "Download failed", "download_error")
+
+        except DownloadError as e:
+            logger.error(f"Job {job_id}: DownloadError: {e.message}")
+            with jobs_lock:
+                jobs[job_id].update({
+                    "status": "error",
+                    "message": e.message,
+                    "error_type": e.error_type,
+                    "error_details": e.details
+                })
+        except Exception as e:
+            logger.exception(f"Job {job_id}: Unexpected exception: {e}")
+            with jobs_lock:
+                jobs[job_id].update({
+                    "status": "error",
+                    "message": str(e),
+                    "error_type": "unexpected_error"
+                })
+    finally:
+        # Cleanup temporary cookie file
+        if temp_cookie_file:
+            cleanup_temp_cookies(temp_cookie_file)
+
+# -----------------------
+# FastAPI App & Endpoints
+# -----------------------
+app = FastAPI(title="Video Downloader API")
+
+@app.exception_handler(Exception)
+async def generic_exception_handler(request: Request, exc: Exception):
+    return JSONResponse(status_code=500, content={"error": "Internal server error", "detail": str(exc)})
+
+@app.get("/")
+async def index():
+    """Serve the HTML frontend"""
+    html_path = os.path.join(os.path.dirname(__file__), "index.html")
+    if os.path.exists(html_path):
+        return FileResponse(html_path)
+    return {"message": "Video Downloader API is running"}
+
+@app.post("/api/download")
+def create_download(req: DownloadRequest, background_tasks: BackgroundTasks):
+    if not req.url.startswith("http"):
+        raise HTTPException(status_code=400, detail="Invalid URL")
+    job_id = str(uuid.uuid4())
+    
+    # Log if custom cookies were provided
+    has_custom_cookies = bool(req.custom_cookies and req.custom_cookies.strip())
+    logger.info(f"Creating job {job_id} - URL: {req.url}, Has custom cookies: {has_custom_cookies}")
+    
+    with jobs_lock:
+        jobs[job_id] = {
+            "id": job_id,
+            "status": "queued",
+            "progress": 0.0,
+            "message": None,
+            "error_type": None,
+            "file_name": None,
+            "link": None,
+            "created_at": time.time()
+        }
+    background_tasks.add_task(run_download, job_id, req)
+    return {"id": job_id, "status": "queued"}
+
+@app.get("/api/jobs/{job_id}")
+def get_job(job_id: str):
+    with jobs_lock:
+        job = jobs.get(job_id)
+        if not job:
+            raise HTTPException(404, "Job not found")
+        return job
+
+@app.get("/api/health")
+def health():
+    try:
+        ver = getattr(yt_dlp, "version", None)
+        ver_str = getattr(ver, "__version__", None) if ver else None
+    except Exception:
+        ver_str = None
+    ffmpeg_path = "ffmpeg"
+    ffmpeg_exists = any(os.access(os.path.join(p, ffmpeg_path), os.X_OK) for p in os.environ.get("PATH", "").split(os.pathsep))
+    return {
+        "ok": True,
+        "yt_dlp_version": ver_str,
+        "ffmpeg": {"path": ffmpeg_path, "exists": ffmpeg_exists},
+        "download_dir": DOWNLOAD_DIR,
+        "cookie_file": COOKIE_FILE if os.path.exists(COOKIE_FILE) else None,
+        "temp_cookies_dir": TEMP_COOKIES_DIR
+    }

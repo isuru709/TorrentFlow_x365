@@ -965,7 +965,12 @@ async function probeMedia() {
         } else {
             let options = '';
             data.formats.slice(-10).forEach(f => {
-                options += `<option value="${f.format_id}" ${f.is_default ? 'selected' : ''}>${f.resolution} (${f.ext})</option>`;
+                let fmt = f.format_id;
+                // If it's a video-only format, append +bestaudio to fix the "no sound" issue
+                if (f.vcodec !== 'none' && f.acodec === 'none') {
+                    fmt = `${f.format_id}+bestaudio/${f.format_id}/best`;
+                }
+                options += `<option value="${fmt}" ${f.is_default ? 'selected' : ''}>${f.resolution} (${f.ext})</option>`;
             });
             html += `
                 <select id="media-format-select" class="file-picker-select" style="margin: 10px 0;">

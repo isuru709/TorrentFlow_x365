@@ -1,0 +1,252 @@
+import os
+import re
+import logging
+from typing import Optional
+import unicodedata
+
+logger = logging.getLogger('download-api')
+
+def sanitize_filename(filename: str) -> str:
+    """
+    Sanitize filename by removing/replacing problematic characters.
+    Preserves the file extension.
+    """
+    # Split filename and extension
+    name, ext = os.path.splitext(filename)
+    
+    # Remove or replace problematic characters
+    # Remove emojis and other unicode symbols
+    name_ascii = ''.join(
+        char for char in name 
+        if unicodedata.category(char)[0] != 'C' and ord(char) < 0x10000
+    )
+    
+    # Replace remaining problematic characters
+    replacements = {
+        '#': '',  # Remove hash symbols
+        '%': '',
+        '&': 'and',
+        '@': 'at',
+        '!': '',
+        '?': '',
+        '*': '',
+        '<': '',
+        '>': '',
+        '|': '',
+        '"': '',
+        "'": '',
+        ':': '-',
+        ';': '',
+        '\\': '',
+        '/': '-',
+        '{': '',
+        '}': '',
+        '[': '',
+        ']': '',
+        '=': '',
+        '+': '',
+        '`': '',
+        '~': '',
+        '(': '',
+        ')': '',
+    }
+    
+    for old, new in replacements.items():
+        name_ascii = name_ascii.replace(old, new)
+    
+    # Remove emojis using regex (catches most emoji ranges)
+    emoji_pattern = re.compile(
+        "["
+        "\U0001F600-\U0001F64F"  # emoticons
+        "\U0001F300-\U0001F5FF"  # symbols & pictographs
+        "\U0001F680-\U0001F6FF"  # transport & map symbols
+        "\U0001F1E0-\U0001F1FF"  # flags (iOS)
+        "\U00002702-\U000027B0"
+        "\U000024C2-\U0001F251"
+        "\U0001F900-\U0001F9FF"  # supplemental symbols
+        "\U0001FA00-\U0001FAFF"  # extended symbols
+        "]+",
+        flags=re.UNICODE
+    )
+    name_ascii = emoji_pattern.sub('', name_ascii)
+    
+    # Replace multiple spaces/underscores with single underscore
+    name_ascii = re.sub(r'[\s_]+', '_', name_ascii)
+    
+    # Remove leading/trailing underscores and dashes
+    name_ascii = name_ascii.strip('_-')
+    
+    # Limit length (keeping some room for extension)
+    max_length = 200
+    if len(name_ascii) > max_length:
+        name_ascii = name_ascii[:max_length]
+    
+    # Ensure we have at least something
+    if not name_ascii or name_ascii.isspace():
+        name_ascii = "video"
+    
+    return name_ascii + ext
+
+
+def auto_rename_file(file_path: str) -> Optional[str]:
+    """
+    Automatically rename a file if it contains problematic characters.
+    The old file is DELETED after successful rename.
+    Returns the new file path if renamed, None if no rename needed or if failed.
+    """
+    try:
+        if not os.path.exists(file_path):
+            logger.warning(f"File does not exist: {file_path}")
+            return None
+        
+        directory = os.path.dirname(file_path)
+        original_filename = os.path.basename(file_path)
+        
+        # Check if filename needs sanitization
+        sanitized_filename = sanitize_filename(original_filename)
+        
+        # If filename is already clean, no need to rename
+        if sanitized_filename == original_filename:
+            logger.info(f"Filename already clean: {original_filename}")
+            return None
+        
+        # Generate new path
+        new_path = os.path.join(directory, sanitized_filename)
+        
+        # Handle duplicate filenames
+        counter = 1
+        base_name, ext = os.path.splitext(sanitized_filename)
+        while os.path.exists(new_path):
+            sanitized_filename = f"{base_name}_{counter}{ext}"
+            new_path = os.path.join(directory, sanitized_filename)
+            counter += 1
+        
+        # Get file size for logging
+        file_size = os.path.getsize(file_path)
+        file_size_mb = file_size / (1024 * 1024)
+        
+        logger.info(f"Renaming file ({file_size_mb:.2f} MB): '{original_filename}' -> '{sanitized_filename}'")
+        
+        # Copy file to new location
+        import shutil
+        shutil.copy2(file_path, new_path)
+        
+        # Verify the new file was created successfully
+        if not os.path.exists(new_path):
+            logger.error(f"Failed to create renamed file: {new_path}")
+            return None
+        
+        new_file_size = os.path.getsize(new_path)
+        if new_file_size != file_size:
+            logger.error(f"File size mismatch after rename. Original: {file_size}, New: {new_file_size}")
+            # Delete the incomplete new file
+            try:
+                os.remove(new_path)
+            except:
+                pass
+            return None
+        
+        # Delete the old file only after successful copy
+        try:
+            os.remove(file_path)
+            logger.info(f"✓ Successfully renamed and deleted old file: '{original_filename}'")
+            logger.info(f"✓ New file path: {new_path}")
+        except Exception as e:
+            logger.error(f"Failed to delete old file '{file_path}': {e}")
+            # Even if deletion fails, we still have the new file, so return the new path
+            logger.warning(f"New file created but old file still exists: {file_path}")
+        
+        return new_path
+        
+    except Exception as e:
+        logger.exception(f"Failed to auto-rename file {file_path}: {e}")
+        return None
+
+
+def needs_sanitization(filename: str) -> bool:
+    """
+    Check if a filename contains problematic characters that need sanitization.
+    """
+    # Check for emojis
+    emoji_pattern = re.compile(
+        "["
+        "\U0001F600-\U0001F64F"
+        "\U0001F300-\U0001F5FF"
+        "\U0001F680-\U0001F6FF"
+        "\U0001F1E0-\U0001F1FF"
+        "\U00002702-\U000027B0"
+        "\U000024C2-\U0001F251"
+        "\U0001F900-\U0001F9FF"
+        "\U0001FA00-\U0001FAFF"
+        "]+",
+        flags=re.UNICODE
+    )
+    
+    if emoji_pattern.search(filename):
+        return True
+    
+    # Check for problematic characters
+    problematic_chars = ['#', '%', '&', '@', '!', '?', '*', '<', '>', '|', '"', "'", ':', ';', '\\', '{', '}', '[', ']', '(', ')']
+    return any(char in filename for char in problematic_chars)
+
+
+def batch_rename_directory(directory: str, dry_run: bool = False) -> dict:
+    """
+    Batch rename all files in a directory that need sanitization.
+    Useful for cleaning up existing files.
+    
+    Args:
+        directory: Path to directory to process
+        dry_run: If True, only report what would be renamed without actually doing it
+        
+    Returns:
+        dict with statistics: {'total': int, 'renamed': int, 'failed': int, 'skipped': int}
+    """
+    stats = {
+        'total': 0,
+        'renamed': 0,
+        'failed': 0,
+        'skipped': 0
+    }
+    
+    try:
+        if not os.path.exists(directory):
+            logger.error(f"Directory does not exist: {directory}")
+            return stats
+        
+        logger.info(f"{'DRY RUN: ' if dry_run else ''}Scanning directory for files to rename: {directory}")
+        
+        for filename in os.listdir(directory):
+            file_path = os.path.join(directory, filename)
+            
+            # Skip directories
+            if os.path.isdir(file_path):
+                continue
+            
+            stats['total'] += 1
+            
+            # Check if file needs sanitization
+            if not needs_sanitization(filename):
+                stats['skipped'] += 1
+                continue
+            
+            if dry_run:
+                sanitized = sanitize_filename(filename)
+                logger.info(f"[DRY RUN] Would rename: '{filename}' -> '{sanitized}'")
+                stats['renamed'] += 1
+            else:
+                # Actually rename the file
+                new_path = auto_rename_file(file_path)
+                if new_path:
+                    stats['renamed'] += 1
+                else:
+                    stats['failed'] += 1
+        
+        logger.info(f"{'DRY RUN ' if dry_run else ''}Batch rename complete: "
+                   f"Total={stats['total']}, Renamed={stats['renamed']}, "
+                   f"Skipped={stats['skipped']}, Failed={stats['failed']}")
+        
+    except Exception as e:
+        logger.exception(f"Failed to batch rename directory {directory}: {e}")
+    
+    return stats
