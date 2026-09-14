@@ -13,26 +13,48 @@ class ProgressHook:
         self.error = None
         self.last_update = time.time()
         
+        self.current_file = None
+        self.completed_bytes = 0
+        self.current_file_downloaded = 0
+        self.current_file_total = 0
+        
     def hook(self, d: dict):
         with self._lock:
+            filename = d.get('filename')
+            
+            if self.current_file != filename:
+                # Switched to a new file (e.g. video finished, now downloading audio)
+                if self.current_file is not None:
+                    self.completed_bytes += self.current_file_total
+                self.current_file = filename
+                self.current_file_total = 0
+                self.current_file_downloaded = 0
+                
             if d['status'] == 'downloading':
                 self.status = "downloading"
-                self.downloaded_bytes = d.get('downloaded_bytes', self.downloaded_bytes)
+                self.current_file_downloaded = d.get('downloaded_bytes', self.current_file_downloaded)
                 
                 # yt-dlp might provide total_bytes or total_bytes_estimate
                 total = d.get('total_bytes') or d.get('total_bytes_estimate') or 0
-                if total > self.total_bytes:
-                    self.total_bytes = total
+                if total > self.current_file_total:
+                    self.current_file_total = total
                     
+                self.downloaded_bytes = self.completed_bytes + self.current_file_downloaded
+                self.total_bytes = self.completed_bytes + self.current_file_total
+                
                 self.speed = d.get('speed') or 0.0
                 self.eta = d.get('eta') or -1
                 self.last_update = time.time()
                 
             elif d['status'] == 'finished':
                 self.status = "processing" # Next step is ffmpeg merge usually
-                self.downloaded_bytes = d.get('total_bytes') or self.downloaded_bytes
-                if self.downloaded_bytes > self.total_bytes:
-                    self.total_bytes = self.downloaded_bytes
+                self.current_file_downloaded = d.get('total_bytes') or self.current_file_downloaded
+                if self.current_file_downloaded > self.current_file_total:
+                    self.current_file_total = self.current_file_downloaded
+                    
+                self.downloaded_bytes = self.completed_bytes + self.current_file_downloaded
+                self.total_bytes = self.completed_bytes + self.current_file_total
+                
                 self.speed = 0.0
                 self.eta = 0
                 self.last_update = time.time()
